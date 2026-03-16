@@ -1,17 +1,25 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::command::Command;
 use crate::error::AppError;
 
 pub const SNAPSHOT_FORMAT_VERSION: u32 = 1;
+pub const AOF_FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct SnapshotFile {
     format_version: u32,
     data: HashMap<String, String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct AofEntry {
+    format_version: u32,
+    command: Command,
 }
 
 pub fn save_to_file(file: &str, data: &HashMap<String, String>) -> Result<(), AppError> {
@@ -46,6 +54,65 @@ pub fn load_from_file(file: &str) -> Result<HashMap<String, String>, AppError> {
 pub fn backup_file(from_file: &str, to_file: &str) -> Result<(), AppError> {
     let data = load_from_file(from_file)?;
     save_to_file(to_file, &data)
+}
+
+pub fn append_aof_command(file: &str, command: &Command) -> Result<(), AppError> {
+    let target_path = Path::new(file);
+    if let Some(parent) = target_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+
+    let entry = AofEntry {
+        format_version: AOF_FORMAT_VERSION,
+        command: command.clone(),
+    };
+    let encoded = serde_json::to_string(&entry)?;
+
+    let mut handle = File::options()
+        .create(true)
+        .append(true)
+        .open(target_path)
+        .map_err(AppError::Io)?;
+
+    handle.write_all(encoded.as_bytes())?;
+    handle.write_all(b"\n")?;
+    handle.sync_all()?;
+    Ok(())
+}
+
+pub fn load_aof_commands(file: &str) -> Result<Vec<Command>, AppError> {
+    let handle = File::open(file)?;
+    let reader = BufReader::new(handle);
+    let mut commands = Vec::new();
+
+    for (line_number, line_result) in reader.lines().enumerate() {
+        let line = line_result?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let entry = serde_json::from_str::<AofEntry>(&line).map_err(|error| {
+            AppError::Config(format!(
+                "invalid AOF entry at line {} in '{}': {}",
+                line_number + 1,
+                file,
+                error
+            ))
+        })?;
+
+        if entry.format_version != AOF_FORMAT_VERSION {
+            return Err(AppError::FormatVersion(format!(
+                "unsupported AOF format version {}; expected {}",
+                entry.format_version, AOF_FORMAT_VERSION
+            )));
+        }
+
+        commands.push(entry.command);
+    }
+
+    Ok(commands)
 }
 
 fn atomic_write_json(file: &str, json: &str) -> Result<(), AppError> {
@@ -104,7 +171,11 @@ fn temp_path_for_target(target_path: &Path) -> Result<PathBuf, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{backup_file, load_from_file, save_to_file};
+    use super::{
+        append_aof_command, backup_file, load_aof_commands, load_from_file, save_to_file,
+        AOF_FORMAT_VERSION,
+    };
+    use crate::command::Command;
     use std::collections::HashMap;
     use std::fs;
 
@@ -200,5 +271,48 @@ mod tests {
 
         let _ = fs::remove_file(&source);
         let _ = fs::remove_file(&backup);
+    }
+
+    #[test]
+    fn appends_and_loads_aof_commands() {
+        let file = temp_file_path("aof");
+
+        append_aof_command(
+            &file,
+            &Command::Set {
+                key: "name".to_string(),
+                value: "gokul".to_string(),
+            },
+        )
+        .expect("append SET should succeed");
+        append_aof_command(
+            &file,
+            &Command::Delete {
+                key: "name".to_string(),
+            },
+        )
+        .expect("append DELETE should succeed");
+
+        let commands = load_aof_commands(&file).expect("AOF load should succeed");
+        assert_eq!(commands.len(), 2);
+        assert!(matches!(commands[0], Command::Set { .. }));
+        assert!(matches!(commands[1], Command::Delete { .. }));
+
+        let _ = fs::remove_file(&file);
+    }
+
+    #[test]
+    fn rejects_unsupported_aof_version() {
+        let file = temp_file_path("aof_bad_version");
+        let bad_entry = format!(
+            "{{\"format_version\":{},\"command\":{{\"Set\":{{\"key\":\"k\",\"value\":\"v\"}}}}}}\n",
+            AOF_FORMAT_VERSION + 1
+        );
+        fs::write(&file, bad_entry).expect("bad AOF should be written");
+
+        let result = load_aof_commands(&file);
+        assert!(result.is_err());
+
+        let _ = fs::remove_file(&file);
     }
 }
