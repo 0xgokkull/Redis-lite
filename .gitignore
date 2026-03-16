@@ -1,0 +1,26 @@
+# Rust build artifacts
+target/
+
+# Cargo lockfile for libraries (keep if publishing binary-only app)
+# Cargo.lock
+
+# Environment files
+.env
+.env.*
+
+# Local runtime data/snapshots
+*.json
+*.rdb
+*.aof
+
+# Logs
+*.log
+
+# macOS
+.DS_Store
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
