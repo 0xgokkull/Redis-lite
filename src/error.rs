@@ -6,6 +6,7 @@ pub enum ErrorCode {
     EmptyInput,
     UnknownCommand,
     InvalidArgs,
+    NoMemory,
     Io,
     Json,
     Config,
@@ -20,6 +21,7 @@ pub enum AppError {
         command: String,
         expected: &'static str,
     },
+    NoMemory(String),
     Io(std::io::Error),
     Json(serde_json::Error),
     Config(String),
@@ -32,6 +34,7 @@ impl AppError {
             Self::EmptyInput => ErrorCode::EmptyInput,
             Self::UnknownCommand(_) => ErrorCode::UnknownCommand,
             Self::InvalidArgs { .. } => ErrorCode::InvalidArgs,
+            Self::NoMemory(_) => ErrorCode::NoMemory,
             Self::Io(_) => ErrorCode::Io,
             Self::Json(_) => ErrorCode::Json,
             Self::Config(_) => ErrorCode::Config,
@@ -48,6 +51,7 @@ impl fmt::Display for AppError {
             Self::InvalidArgs { command, expected } => {
                 write!(f, "error: {command} expects {expected}")
             }
+            Self::NoMemory(message) => write!(f, "oom error: {message}"),
             Self::Io(e) => write!(f, "io error: {e}"),
             Self::Json(e) => write!(f, "json error: {e}"),
             Self::Config(message) => write!(f, "config error: {message}"),
