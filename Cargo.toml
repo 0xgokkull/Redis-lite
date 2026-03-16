@@ -11,6 +11,7 @@ tokio = { version = "1", features = [
     "rt-multi-thread",
     "net",
     "io-util",
+    "signal",
     "sync",
 ] }
 rand = "0.8"
