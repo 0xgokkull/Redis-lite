@@ -1,3 +1,4 @@
+use redis_lite::acl::AclStore;
 use redis_lite::config::AppConfig;
 use redis_lite::logging::LogLevel;
 use redis_lite::server::{run_server, ServerOptions};
@@ -25,6 +26,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     --max-keys <n>          Maximum number of keys kept in memory\n\
     --eviction-policy <p>   Eviction policy: noeviction or allkeys-lru\n\
         --requirepass <pass>    Require AUTH in server mode\n\
+  --acl-rule <rule>       ACL rule (repeatable): '<name> <pass|nopass> [+@read|+@write|+@admin|+@all]'\n\
   --help                  Print this help\n"
         );
         return Ok(());
@@ -34,6 +36,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config_args = args_without_bind(&args);
     let config = AppConfig::load(&config_args)?;
     let log_level = LogLevel::parse(&config.log_level)?;
+    let acl_store = AclStore::from_rules(&config.acl_rules)?;
 
     let options = ServerOptions {
         bind_addr,
@@ -46,6 +49,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         eviction_policy: config.eviction_policy,
         requirepass: config.requirepass,
         log_level,
+        acl_store,
     };
 
     run_server(options).await?;
