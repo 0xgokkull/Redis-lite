@@ -3,6 +3,7 @@ pub mod config;
 pub mod error;
 pub mod parser;
 pub mod persistence;
+pub mod replication;
 pub mod server;
 pub mod store;
 
@@ -11,6 +12,7 @@ use config::EvictionPolicy;
 use error::AppError;
 use parser::parse_command;
 use persistence::{append_aof_command, load_aof_commands, load_from_file, save_to_file};
+use replication::{ReplicationRole, ReplicationState};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::Store;
@@ -33,6 +35,7 @@ pub struct RedisLite {
     access_tick: u64,
     max_keys: Option<usize>,
     eviction_policy: EvictionPolicy,
+    replication: ReplicationState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +71,7 @@ impl RedisLite {
             access_tick: 0,
             max_keys,
             eviction_policy,
+            replication: ReplicationState::new(),
         }
     }
 
@@ -425,6 +429,69 @@ impl RedisLite {
             Command::Restore { file } => {
                 self.load_from_path(&file)?;
                 Ok(RuntimeMessage::Continue(format!("restored from {file}")))
+            }
+            Command::Slaveof { host, port } => {
+                self.replication.become_slave(host.clone(), port);
+                Ok(RuntimeMessage::Continue(format!(
+                    "OK - attempting to replicate from {host}:{port}"
+                )))
+            }
+            Command::SlaveofNoOne => {
+                self.replication.become_master();
+                Ok(RuntimeMessage::Continue(
+                    "OK - promoted to master from replica mode".to_string(),
+                ))
+            }
+            Command::Role => {
+                let role = &self.replication.role;
+                let info = match role {
+                    ReplicationRole::Master => format!(
+                        "master {} {} 0",
+                        self.replication.replication_id, self.replication.replication_offset
+                    ),
+                    ReplicationRole::Slave => format!(
+                        "slave {} {} {}",
+                        self.replication.master_host.as_deref().unwrap_or("?"),
+                        self.replication.master_port.unwrap_or(0),
+                        self.replication.replication_offset
+                    ),
+                };
+                Ok(RuntimeMessage::Continue(info))
+            }
+            Command::Replconf { subcommand, args } => {
+                match subcommand.to_lowercase().as_str() {
+                    "listening-port" => Ok(RuntimeMessage::Continue("OK".to_string())),
+                    "capa" => Ok(RuntimeMessage::Continue("OK".to_string())),
+                    "ack" => {
+                        if let Some(offset_str) = args.first() {
+                            if let Ok(offset) = offset_str.parse::<i64>() {
+                                self.replication.replication_offset = offset;
+                            }
+                        }
+                        Ok(RuntimeMessage::Continue("OK".to_string()))
+                    }
+                    _ => Err(AppError::Config(format!(
+                        "unknown REPLCONF subcommand: {subcommand}"
+                    ))),
+                }
+            }
+            Command::Psync {
+                replication_id,
+                offset: _,
+            } => {
+                if replication_id == "?" {
+                    let sync_response = format!(
+                        "FULLRESYNC {} {}",
+                        self.replication.replication_id, self.replication.replication_offset
+                    );
+                    Ok(RuntimeMessage::Continue(sync_response))
+                } else {
+                    let sync_response = format!(
+                        "CONTINUE {}",
+                        self.replication.replication_offset
+                    );
+                    Ok(RuntimeMessage::Continue(sync_response))
+                }
             }
             Command::List => Ok(RuntimeMessage::Continue(self.format_entries())),
             Command::Help => Ok(RuntimeMessage::Continue(HELP_TEXT.to_string())),

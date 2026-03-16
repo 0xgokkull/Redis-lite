@@ -65,6 +65,20 @@ pub enum Command {
     Restore {
         file: String,
     },
+    Slaveof {
+        host: String,
+        port: u16,
+    },
+    SlaveofNoOne,
+    Role,
+    Replconf {
+        subcommand: String,
+        args: Vec<String>,
+    },
+    Psync {
+        replication_id: String,
+        offset: i64,
+    },
     List,
     Help,
     Exit,
@@ -90,6 +104,8 @@ Available commands:\n\
   LOAD <file>         Replace in-memory state from a JSON file\n\
   BACKUP <file>       Create a snapshot backup file\n\
   RESTORE <file>      Restore in-memory state from a backup\n\
+  SLAVEOF <host> <p>  Replicate from primary (SLAVEOF NO ONE to stop)\n\
+  ROLE                Show if role is master/slave and replication info\n\
   LIST                Show all stored entries\n\
   HELP                Show this help\n\
   EXIT                Quit the application\n";

@@ -394,6 +394,106 @@ pub fn parse_command(input: &str) -> Result<Command, AppError> {
                 file: file.to_string(),
             })
         }
+        "SLAVEOF" => {
+            let Some(host_or_no) = parts.next() else {
+                return Err(AppError::InvalidArgs {
+                    command: "SLAVEOF".to_string(),
+                    expected: "<host> <port> or NO ONE",
+                });
+            };
+            if host_or_no.to_uppercase() == "NO" {
+                let Some(one) = parts.next() else {
+                    return Err(AppError::InvalidArgs {
+                        command: "SLAVEOF".to_string(),
+                        expected: "<host> <port> or NO ONE",
+                    });
+                };
+                if one.to_uppercase() != "ONE" {
+                    return Err(AppError::InvalidArgs {
+                        command: "SLAVEOF".to_string(),
+                        expected: "<host> <port> or NO ONE",
+                    });
+                }
+                if parts.next().is_some() {
+                    return Err(AppError::InvalidArgs {
+                        command: "SLAVEOF".to_string(),
+                        expected: "<host> <port> or NO ONE",
+                    });
+                }
+                Ok(Command::SlaveofNoOne)
+            } else {
+                let Some(raw_port) = parts.next() else {
+                    return Err(AppError::InvalidArgs {
+                        command: "SLAVEOF".to_string(),
+                        expected: "<host> <port> or NO ONE",
+                    });
+                };
+                if parts.next().is_some() {
+                    return Err(AppError::InvalidArgs {
+                        command: "SLAVEOF".to_string(),
+                        expected: "<host> <port> or NO ONE",
+                    });
+                }
+                let port = raw_port.parse::<u16>().map_err(|_| AppError::InvalidArgs {
+                    command: "SLAVEOF".to_string(),
+                    expected: "<host> <port> or NO ONE",
+                })?;
+                Ok(Command::Slaveof {
+                    host: host_or_no.to_string(),
+                    port,
+                })
+            }
+        }
+        "ROLE" => {
+            if parts.next().is_some() {
+                return Err(AppError::InvalidArgs {
+                    command: "ROLE".to_string(),
+                    expected: "no arguments",
+                });
+            }
+            Ok(Command::Role)
+        }
+        "REPLCONF" => {
+            let Some(subcommand) = parts.next() else {
+                return Err(AppError::InvalidArgs {
+                    command: "REPLCONF".to_string(),
+                    expected: "<subcommand> [args...]",
+                });
+            };
+            let args = parts.map(|s| s.to_string()).collect::<Vec<_>>();
+            Ok(Command::Replconf {
+                subcommand: subcommand.to_string(),
+                args,
+            })
+        }
+        "PSYNC" => {
+            let Some(replication_id) = parts.next() else {
+                return Err(AppError::InvalidArgs {
+                    command: "PSYNC".to_string(),
+                    expected: "<replication_id> <offset>",
+                });
+            };
+            let Some(raw_offset) = parts.next() else {
+                return Err(AppError::InvalidArgs {
+                    command: "PSYNC".to_string(),
+                    expected: "<replication_id> <offset>",
+                });
+            };
+            if parts.next().is_some() {
+                return Err(AppError::InvalidArgs {
+                    command: "PSYNC".to_string(),
+                    expected: "<replication_id> <offset>",
+                });
+            }
+            let offset = raw_offset.parse::<i64>().map_err(|_| AppError::InvalidArgs {
+                command: "PSYNC".to_string(),
+                expected: "<replication_id> <offset>",
+            })?;
+            Ok(Command::Psync {
+                replication_id: replication_id.to_string(),
+                offset,
+            })
+        }
         "LIST" => {
             if parts.next().is_some() {
                 return Err(AppError::InvalidArgs {
@@ -594,5 +694,47 @@ mod tests {
     fn rejects_set_without_value() {
         let error = parse_command("SET username").expect_err("SET missing value should fail");
         assert!(matches!(error, AppError::InvalidArgs { .. }));
+    }
+
+    #[test]
+    fn parses_slaveof_with_host_and_port() {
+        let command = parse_command("SLAVEOF localhost 6379").expect("SLAVEOF should parse");
+        assert_eq!(
+            command,
+            Command::Slaveof {
+                host: "localhost".to_string(),
+                port: 6379
+            }
+        );
+    }
+
+    #[test]
+    fn parses_slaveof_no_one() {
+        let command = parse_command("SLAVEOF NO ONE").expect("SLAVEOF NO ONE should parse");
+        assert_eq!(command, Command::SlaveofNoOne);
+    }
+
+    #[test]
+    fn parses_role_command() {
+        let command = parse_command("ROLE").expect("ROLE should parse");
+        assert_eq!(command, Command::Role);
+    }
+
+    #[test]
+    fn parses_replconf_command() {
+        let command = parse_command("REPLCONF listening-port 6380").expect("REPLCONF should parse");
+        assert!(matches!(command, Command::Replconf { .. }));
+    }
+
+    #[test]
+    fn parses_psync_command() {
+        let command = parse_command("PSYNC ? -1").expect("PSYNC should parse");
+        assert_eq!(
+            command,
+            Command::Psync {
+                replication_id: "?".to_string(),
+                offset: -1
+            }
+        );
     }
 }
