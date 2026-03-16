@@ -23,6 +23,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     --appendonly            Enable append-only command logging\n\
     --max-keys <n>          Maximum number of keys kept in memory\n\
     --eviction-policy <p>   Eviction policy: noeviction or allkeys-lru\n\
+        --requirepass <pass>    Require AUTH in server mode\n\
   --help                  Print this help\n"
         );
         return Ok(());
@@ -41,6 +42,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         appendonly: config.appendonly,
         max_keys: config.max_keys,
         eviction_policy: config.eviction_policy,
+        requirepass: config.requirepass,
     };
 
     run_server(options).await?;
