@@ -1,3 +1,4 @@
+pub mod acl;
 pub mod command;
 pub mod config;
 pub mod error;
