@@ -2,6 +2,7 @@ use std::env;
 use std::path::PathBuf;
 
 use crate::error::AppError;
+use crate::logging::LogLevel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 pub enum EvictionPolicy {
@@ -133,6 +134,8 @@ fn validate_config(config: &AppConfig) -> Result<(), AppError> {
             ));
         }
     }
+
+    let _ = LogLevel::parse(&config.log_level)?;
 
     Ok(())
 }
@@ -405,6 +408,18 @@ mod tests {
             "redis-lite".to_string(),
             "--requirepass".to_string(),
             "   ".to_string(),
+        ];
+
+        let result = AppConfig::load(&args);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_log_level() {
+        let args = vec![
+            "redis-lite".to_string(),
+            "--log-level".to_string(),
+            "verbose".to_string(),
         ];
 
         let result = AppConfig::load(&args);
