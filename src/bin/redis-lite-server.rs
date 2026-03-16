@@ -17,8 +17,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
   --bind <addr>           TCP bind address (default: 127.0.0.1:6379)\n\
   --config <file>         Path to JSON config file\n\
   --data-file <file>      Snapshot file path\n\
+    --aof-file <file>       AOF command log path\n\
   --autoload              Load snapshot on startup\n\
   --autosave              Save snapshot after mutating commands\n\
+    --appendonly            Enable append-only command logging\n\
+    --max-keys <n>          Maximum number of keys kept in memory\n\
+    --eviction-policy <p>   Eviction policy: noeviction or allkeys-lru\n\
   --help                  Print this help\n"
         );
         return Ok(());
@@ -31,8 +35,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let options = ServerOptions {
         bind_addr,
         data_file: config.data_file,
+        aof_file: config.aof_file,
         autoload: config.autoload,
         autosave: config.autosave,
+        appendonly: config.appendonly,
+        max_keys: config.max_keys,
+        eviction_policy: config.eviction_policy,
     };
 
     run_server(options).await?;
