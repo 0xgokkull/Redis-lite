@@ -44,6 +44,12 @@ Start server mode on default Redis port:
 cargo run --bin redis-lite-server -- --bind 127.0.0.1:6379 --autoload --autosave --appendonly
 ```
 
+With password protection enabled:
+
+```text
+cargo run --bin redis-lite-server -- --bind 127.0.0.1:6379 --autoload --autosave --appendonly --requirepass secret
+```
+
 Quick protocol test using netcat:
 
 ```text
@@ -73,6 +79,21 @@ Security behavior in current server mode:
 
 - Optional password auth via `--requirepass <password>`
 - When enabled, write/admin commands return `NOAUTH` until `AUTH` succeeds
+- Graceful shutdown on `Ctrl+C` with final snapshot save when `--autosave` is enabled
+
+### Run in Docker
+
+Build image:
+
+```text
+docker build -t redis-lite:latest .
+```
+
+Run container:
+
+```text
+docker run --rm -p 6379:6379 -v $(pwd)/data:/data redis-lite:latest
+```
 
 ### Add as dependency
 
