@@ -62,3 +62,11 @@
 - Replication ID generation and offset tracking
 - Foundation for replica broadcast (prepared in ReplicaConnections struct)
 
+### Step 7 - Observability & Monitoring (Completed)
+
+- INFO command in CLI and RESP mode with structured sections
+- Runtime counters: total/read/write commands processed
+- Keyspace counters: current key count and expiring key count
+- Replication telemetry exposed via INFO
+- Connection metrics in RESP INFO: connected clients, total connections, server uptime
+
