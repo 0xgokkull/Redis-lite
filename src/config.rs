@@ -1,6 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
+use crate::acl::parse_acl_rule;
 use crate::error::AppError;
 use crate::logging::LogLevel;
 
@@ -33,6 +34,7 @@ pub struct AppConfig {
     pub eviction_policy: EvictionPolicy,
     pub requirepass: Option<String>,
     pub log_level: String,
+    pub acl_rules: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -46,6 +48,7 @@ struct PartialConfig {
     eviction_policy: Option<EvictionPolicy>,
     requirepass: Option<String>,
     log_level: Option<String>,
+    acl_rules: Option<Vec<String>>,
 }
 
 impl Default for AppConfig {
@@ -60,6 +63,7 @@ impl Default for AppConfig {
             eviction_policy: EvictionPolicy::NoEviction,
             requirepass: None,
             log_level: "info".to_string(),
+            acl_rules: Vec::new(),
         }
     }
 }
@@ -80,13 +84,14 @@ impl AppConfig {
     --eviction-policy <p>   Eviction policy: noeviction or allkeys-lru\n\
         --requirepass <pass>    Require AUTH before write/admin commands\n\
   --log-level <level>     Logging level text (info, debug, etc.)\n\
+  --acl-rule <rule>       ACL rule (repeatable): '<name> <pass|nopass> [+@read|+@write|+@admin|+@all]'\n\
   --help                  Print this help\n\
 \n\
 Environment variables:\n\
   REDIS_LITE_CONFIG, REDIS_LITE_DATA_FILE, REDIS_LITE_AUTOLOAD,\n\
     REDIS_LITE_AOF_FILE, REDIS_LITE_AUTOSAVE, REDIS_LITE_APPENDONLY,\n\
     REDIS_LITE_MAX_KEYS, REDIS_LITE_EVICTION_POLICY, REDIS_LITE_REQUIREPASS,\n\
-    REDIS_LITE_LOG_LEVEL\n"
+    REDIS_LITE_LOG_LEVEL, REDIS_LITE_ACL_RULES\n"
     }
 
     pub fn load(args: &[String]) -> Result<Self, AppError> {
@@ -136,6 +141,10 @@ fn validate_config(config: &AppConfig) -> Result<(), AppError> {
     }
 
     let _ = LogLevel::parse(&config.log_level)?;
+
+    for rule in &config.acl_rules {
+        parse_acl_rule(rule)?;
+    }
 
     Ok(())
 }
@@ -231,6 +240,17 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, AppError> {
                 parsed.values.log_level = Some(value.clone());
                 index += 2;
             }
+            "--acl-rule" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    AppError::Config("--acl-rule requires a rule string".to_string())
+                })?;
+                parsed
+                    .values
+                    .acl_rules
+                    .get_or_insert_with(Vec::new)
+                    .push(value.clone());
+                index += 2;
+            }
             other => {
                 return Err(AppError::Config(format!(
                     "unknown startup argument '{other}'"
@@ -271,6 +291,12 @@ fn parse_env() -> Result<PartialConfig, AppError> {
         .transpose()?;
     let requirepass = env::var("REDIS_LITE_REQUIREPASS").ok();
     let log_level = env::var("REDIS_LITE_LOG_LEVEL").ok();
+    let acl_rules = env::var("REDIS_LITE_ACL_RULES").ok().map(|raw| {
+        raw.split(';')
+            .map(|r| r.trim().to_string())
+            .filter(|r| !r.is_empty())
+            .collect::<Vec<_>>()
+    });
 
     Ok(PartialConfig {
         data_file,
@@ -282,6 +308,7 @@ fn parse_env() -> Result<PartialConfig, AppError> {
         eviction_policy,
         requirepass,
         log_level,
+        acl_rules,
     })
 }
 
@@ -318,6 +345,9 @@ fn apply_partial(config: &mut AppConfig, partial: &PartialConfig) {
     }
     if let Some(value) = &partial.log_level {
         config.log_level = value.clone();
+    }
+    if let Some(value) = &partial.acl_rules {
+        config.acl_rules = value.clone();
     }
 }
 
@@ -422,6 +452,30 @@ mod tests {
             "verbose".to_string(),
         ];
 
+        let result = AppConfig::load(&args);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn acl_rules_are_validated_on_load() {
+        let args = vec![
+            "redis-lite".to_string(),
+            "--acl-rule".to_string(),
+            "alice pass +@read".to_string(),
+            "--acl-rule".to_string(),
+            "bob admin +@all".to_string(),
+        ];
+        let config = AppConfig::load(&args).expect("valid ACL rules should load");
+        assert_eq!(config.acl_rules.len(), 2);
+    }
+
+    #[test]
+    fn rejects_invalid_acl_rule() {
+        let args = vec![
+            "redis-lite".to_string(),
+            "--acl-rule".to_string(),
+            "badrule".to_string(),
+        ];
         let result = AppConfig::load(&args);
         assert!(result.is_err());
     }
