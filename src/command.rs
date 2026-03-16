@@ -79,6 +79,7 @@ pub enum Command {
         replication_id: String,
         offset: i64,
     },
+    Info,
     List,
     Help,
     Exit,
@@ -106,6 +107,7 @@ Available commands:\n\
   RESTORE <file>      Restore in-memory state from a backup\n\
   SLAVEOF <host> <p>  Replicate from primary (SLAVEOF NO ONE to stop)\n\
   ROLE                Show if role is master/slave and replication info\n\
+    INFO                Show runtime server and stats information\n\
   LIST                Show all stored entries\n\
   HELP                Show this help\n\
   EXIT                Quit the application\n";
