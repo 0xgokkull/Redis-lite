@@ -36,6 +36,10 @@ pub struct RedisLite {
     max_keys: Option<usize>,
     eviction_policy: EvictionPolicy,
     replication: ReplicationState,
+    started_at_secs: u64,
+    total_commands_processed: u64,
+    read_commands_processed: u64,
+    write_commands_processed: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +76,10 @@ impl RedisLite {
             max_keys,
             eviction_policy,
             replication: ReplicationState::new(),
+            started_at_secs: now_secs(),
+            total_commands_processed: 0,
+            read_commands_processed: 0,
+            write_commands_processed: 0,
         }
     }
 
@@ -158,6 +166,13 @@ impl RedisLite {
 
     pub fn execute_command(&mut self, command: Command) -> Result<RuntimeMessage, AppError> {
         self.purge_expired_keys();
+        self.total_commands_processed = self.total_commands_processed.saturating_add(1);
+        if command_is_write(&command) {
+            self.write_commands_processed = self.write_commands_processed.saturating_add(1);
+        }
+        if command_is_read(&command) {
+            self.read_commands_processed = self.read_commands_processed.saturating_add(1);
+        }
 
         match command {
             Command::Set { key, value } => {
@@ -458,6 +473,7 @@ impl RedisLite {
                 };
                 Ok(RuntimeMessage::Continue(info))
             }
+            Command::Info => Ok(RuntimeMessage::Continue(self.format_info())),
             Command::Replconf { subcommand, args } => {
                 match subcommand.to_lowercase().as_str() {
                     "listening-port" => Ok(RuntimeMessage::Continue("OK".to_string())),
@@ -619,6 +635,29 @@ impl RedisLite {
         self.access_order.remove(key);
         existed
     }
+
+    fn format_info(&self) -> String {
+        let uptime = now_secs().saturating_sub(self.started_at_secs);
+        let role_line = match self.replication.role {
+            ReplicationRole::Master => "master".to_string(),
+            ReplicationRole::Slave => "slave".to_string(),
+        };
+
+        format!(
+            "# Server\r\nuptime_in_seconds:{uptime}\r\n\
+# Stats\r\ntotal_commands_processed:{}\r\nread_commands_processed:{}\r\nwrite_commands_processed:{}\r\n\
+# Keyspace\r\nkeys:{}\r\nexpires:{}\r\n\
+# Replication\r\nrole:{}\r\nmaster_replid:{}\r\nmaster_repl_offset:{}\r\n",
+            self.total_commands_processed,
+            self.read_commands_processed,
+            self.write_commands_processed,
+            self.key_types.len(),
+            self.expirations.len(),
+            role_line,
+            self.replication.replication_id,
+            self.replication.replication_offset,
+        )
+    }
 }
 
 fn normalize_range(len: usize, start: i64, stop: i64) -> Option<(usize, usize)> {
@@ -680,6 +719,25 @@ fn command_appends_to_aof(command: &Command) -> bool {
             | Command::Expire { .. }
             | Command::Persist { .. }
     )
+}
+
+fn command_is_read(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Get { .. }
+            | Command::HGet { .. }
+            | Command::SMembers { .. }
+            | Command::ZRange { .. }
+            | Command::Ttl { .. }
+            | Command::Role
+            | Command::Info
+            | Command::List
+            | Command::Help
+    )
+}
+
+fn command_is_write(command: &Command) -> bool {
+    command_mutates_state(command)
 }
 
 #[cfg(test)]
@@ -955,5 +1013,26 @@ mod tests {
             .expect("ZRANGE should succeed")
             .expect("ZRANGE should return output");
         assert_eq!(range, RuntimeMessage::Continue("bob\nalice".to_string()));
+    }
+
+    #[test]
+    fn info_reports_runtime_metrics() {
+        let mut app = RedisLite::new();
+        let _ = app.execute_line("SET k v").expect("SET should succeed");
+        let _ = app.execute_line("GET k").expect("GET should succeed");
+
+        let info = app
+            .execute_line("INFO")
+            .expect("INFO should succeed")
+            .expect("INFO should return output");
+
+        let RuntimeMessage::Continue(payload) = info else {
+            panic!("INFO should return continue message");
+        };
+
+        assert!(payload.contains("# Server"));
+        assert!(payload.contains("total_commands_processed:"));
+        assert!(payload.contains("write_commands_processed:"));
+        assert!(payload.contains("read_commands_processed:"));
     }
 }
