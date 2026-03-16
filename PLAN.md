@@ -70,3 +70,11 @@
 - Replication telemetry exposed via INFO
 - Connection metrics in RESP INFO: connected clients, total connections, server uptime
 
+### Step 8 - Security Basics (Completed)
+
+- Added server password auth (`AUTH <password>`) with `--requirepass` support
+- Per-connection authentication state in RESP server
+- Command gating with `NOAUTH` for protected commands until authentication
+- Startup config support for `requirepass` via args and env (`REDIS_LITE_REQUIREPASS`)
+- Added integration-style server unit test for auth flow (deny, wrong pass, success)
+
