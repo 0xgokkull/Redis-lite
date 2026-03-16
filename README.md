@@ -54,6 +54,7 @@ Current RESP commands in server mode:
 
 - `PING [message]`
 - `ECHO <message>`
+- `AUTH <password>`
 - `SET <key> <value>`
 - `GET <key>`
 - `DEL <key> [key ...]`
@@ -67,6 +68,11 @@ Persistence behavior in current server mode:
 - Snapshot (RDB-like JSON) with atomic writes
 - AOF command logging for mutating commands (`SET`, `DEL`)
 - Startup recovery order: snapshot first, then AOF replay
+
+Security behavior in current server mode:
+
+- Optional password auth via `--requirepass <password>`
+- When enabled, write/admin commands return `NOAUTH` until `AUTH` succeeds
 
 ### Add as dependency
 
@@ -115,6 +121,7 @@ The CLI supports production-friendly startup options:
 - `--autoload` / `--no-autoload`
 - `--autosave` / `--no-autosave`
 - `--log-level <level>`
+- `--requirepass <password>`
 
 Environment variables are also supported:
 
@@ -123,6 +130,7 @@ Environment variables are also supported:
 - `REDIS_LITE_AUTOLOAD`
 - `REDIS_LITE_AUTOSAVE`
 - `REDIS_LITE_LOG_LEVEL`
+- `REDIS_LITE_REQUIREPASS`
 
 ---
 
