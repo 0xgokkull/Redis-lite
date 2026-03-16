@@ -75,10 +75,25 @@ pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
     println!("redis-lite RESP server listening on {}", options.bind_addr);
 
     loop {
-        let (stream, peer) = listener
-            .accept()
-            .await
-            .map_err(|e| AppError::Config(format!("failed to accept connection: {e}")))?;
+        let accepted = tokio::select! {
+            accept_result = listener.accept() => {
+                Some(
+                    accept_result
+                        .map_err(|e| AppError::Config(format!("failed to accept connection: {e}")))?
+                )
+            }
+            signal_result = tokio::signal::ctrl_c() => {
+                signal_result.map_err(|e| {
+                    AppError::Config(format!("failed to listen for shutdown signal: {e}"))
+                })?;
+                println!("shutdown signal received, stopping server...");
+                None
+            }
+        };
+
+        let Some((stream, peer)) = accepted else {
+            break;
+        };
 
         let state = Arc::clone(&shared);
         let metrics_clone = Arc::clone(&metrics);
@@ -99,6 +114,14 @@ pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
             m.current_connections = m.current_connections.saturating_sub(1);
         });
     }
+
+    let app = shared.lock().await;
+    if options.autosave {
+        app.save_to_path(&options.data_file)?;
+        println!("final snapshot saved to {}", options.data_file);
+    }
+
+    Ok(())
 }
 
 async fn handle_client(
