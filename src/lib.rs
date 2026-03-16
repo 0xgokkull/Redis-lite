@@ -1,6 +1,7 @@
 pub mod command;
 pub mod config;
 pub mod error;
+pub mod logging;
 pub mod parser;
 pub mod persistence;
 pub mod replication;
