@@ -4,6 +4,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufRead
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
+use crate::acl::{AclStore, CommandCategory};
 use crate::config::EvictionPolicy;
 use crate::error::AppError;
 use crate::logging::LogLevel;
@@ -26,6 +27,11 @@ impl ServerMetrics {
     }
 }
 
+struct Session {
+    username: String,
+    authenticated: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
     pub bind_addr: String,
@@ -38,6 +44,7 @@ pub struct ServerOptions {
     pub eviction_policy: EvictionPolicy,
     pub requirepass: Option<String>,
     pub log_level: LogLevel,
+    pub acl_store: AclStore,
 }
 
 pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
@@ -154,7 +161,20 @@ async fn handle_client(
 ) -> Result<(), AppError> {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
-    let mut authenticated = options.requirepass.is_none();
+    let is_acl_mode = !options.acl_store.is_empty();
+    let auto_auth = if is_acl_mode {
+        options
+            .acl_store
+            .get_user("default")
+            .map(|u| u.password.is_none())
+            .unwrap_or(false)
+    } else {
+        options.requirepass.is_none()
+    };
+    let mut session = Session {
+        username: "default".to_string(),
+        authenticated: auto_auth,
+    };
 
     loop {
         let command = match read_resp_command(&mut reader).await {
@@ -175,7 +195,7 @@ async fn handle_client(
             .unwrap_or_else(|| "<empty>".to_string());
         let started = std::time::Instant::now();
 
-        let response = execute_resp(&state, &options, &metrics, &command, &mut authenticated).await;
+        let response = execute_resp(&state, &options, &metrics, &command, &mut session).await;
 
         let elapsed_us = started.elapsed().as_micros();
         options.log_level.log(
@@ -202,31 +222,68 @@ async fn execute_resp(
     options: &ServerOptions,
     metrics: &Arc<Mutex<ServerMetrics>>,
     command: &[String],
-    authenticated: &mut bool,
+    session: &mut Session,
 ) -> String {
     if command.is_empty() {
         return resp_error("ERR empty command");
     }
 
     let verb = command[0].to_ascii_uppercase();
+    let is_acl_mode = !options.acl_store.is_empty();
+    let requires_auth = is_acl_mode || options.requirepass.is_some();
 
-    if options.requirepass.is_some() && !*authenticated && !is_auth_exempt_command(&verb) {
+    if requires_auth && !session.authenticated && !is_auth_exempt_command(&verb) {
         return resp_error("NOAUTH Authentication required");
+    }
+
+    // ACL permission check — only in ACL mode, for authenticated sessions.
+    if is_acl_mode
+        && session.authenticated
+        && !is_auth_exempt_command(&verb)
+        && !options.acl_store.can_run(&session.username, &verb)
+    {
+        return resp_error(&format!(
+            "NOPERM User {} has no permissions to run the '{}' command",
+            session.username,
+            verb.to_ascii_lowercase()
+        ));
     }
 
     match verb.as_str() {
         "AUTH" => {
-            if command.len() != 2 {
+            // Supports both: AUTH <password>  and  AUTH <username> <password>
+            if command.len() < 2 || command.len() > 3 {
                 return resp_error("ERR wrong number of arguments for 'AUTH'");
             }
+            let (username, password) = if command.len() == 3 {
+                (command[1].as_str(), command[2].as_str())
+            } else {
+                ("default", command[1].as_str())
+            };
 
-            match &options.requirepass {
-                Some(password) if password == &command[1] => {
-                    *authenticated = true;
-                    "+OK\r\n".to_string()
+            if is_acl_mode {
+                match options.acl_store.authenticate(username, password) {
+                    Some(user) => {
+                        session.username = user.name.clone();
+                        session.authenticated = true;
+                        "+OK\r\n".to_string()
+                    }
+                    None => resp_error("WRONGPASS invalid username-password pair"),
                 }
-                Some(_) => resp_error("WRONGPASS invalid password"),
-                None => "+OK\r\n".to_string(),
+            } else {
+                // Legacy mode: ignore username, check requirepass.
+                match &options.requirepass {
+                    Some(pass) if pass == password => {
+                        session.username = username.to_string();
+                        session.authenticated = true;
+                        "+OK\r\n".to_string()
+                    }
+                    Some(_) => resp_error("WRONGPASS invalid password"),
+                    None => {
+                        session.authenticated = true;
+                        "+OK\r\n".to_string()
+                    }
+                }
             }
         }
         "PING" => {
@@ -635,6 +692,51 @@ async fn execute_resp(
             resp_bulk(Some(&payload))
         }
         "QUIT" => "+OK\r\n".to_string(),
+        "ACLWHOAMI" => {
+            if command.len() != 1 {
+                return resp_error("ERR wrong number of arguments for 'ACLWHOAMI'");
+            }
+            resp_bulk(Some(&session.username))
+        }
+        "ACLCAT" => {
+            if command.len() > 2 {
+                return resp_error("ERR wrong number of arguments for 'ACLCAT'");
+            }
+            if command.len() == 1 {
+                let cats = CommandCategory::all_names();
+                let mut response = format!("*{}\r\n", cats.len());
+                for cat in cats {
+                    response.push_str(&resp_bulk(Some(cat)));
+                }
+                response
+            } else {
+                match CommandCategory::commands_in_category(&command[1]) {
+                    Some(cmds) => {
+                        let mut response = format!("*{}\r\n", cmds.len());
+                        for cmd in cmds {
+                            response.push_str(&resp_bulk(Some(cmd)));
+                        }
+                        response
+                    }
+                    None => resp_error(&format!("ERR unknown category '{}'", command[1])),
+                }
+            }
+        }
+        "ACLLIST" => {
+            if command.len() != 1 {
+                return resp_error("ERR wrong number of arguments for 'ACLLIST'");
+            }
+            let rules = options.acl_store.list_rules();
+            if rules.is_empty() {
+                "*0\r\n".to_string()
+            } else {
+                let mut response = format!("*{}\r\n", rules.len());
+                for rule in &rules {
+                    response.push_str(&resp_bulk(Some(rule)));
+                }
+                response
+            }
+        }
         _ => resp_error("ERR unknown command"),
     }
 }
@@ -647,7 +749,7 @@ fn now_secs() -> u64 {
 }
 
 fn is_auth_exempt_command(verb: &str) -> bool {
-    matches!(verb, "AUTH" | "PING" | "ECHO" | "QUIT")
+    matches!(verb, "AUTH" | "PING" | "ECHO" | "QUIT" | "ACLWHOAMI" | "ACLCAT")
 }
 
 async fn read_resp_command<R>(reader: &mut BufReader<R>) -> Result<Option<Vec<String>>, String>
@@ -750,8 +852,10 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        execute_resp, read_resp_command, resp_bulk, resp_integer, ServerMetrics, ServerOptions,
+        execute_resp, read_resp_command, resp_bulk, resp_integer, Session, ServerMetrics,
+        ServerOptions,
     };
+    use crate::acl::AclStore;
     use crate::config::EvictionPolicy;
     use crate::logging::LogLevel;
     use crate::RedisLite;
@@ -792,15 +896,19 @@ mod tests {
             eviction_policy: EvictionPolicy::NoEviction,
             requirepass: Some("secret".to_string()),
             log_level: LogLevel::Error,
+            acl_store: AclStore::default(),
         };
 
-        let mut authed = false;
+        let mut session = Session {
+            username: "default".to_string(),
+            authenticated: false,
+        };
         let blocked = execute_resp(
             &state,
             &options,
             &metrics,
             &["SET".to_string(), "k".to_string(), "v".to_string()],
-            &mut authed,
+            &mut session,
         )
         .await;
         assert!(blocked.starts_with("-NOAUTH"));
@@ -810,7 +918,7 @@ mod tests {
             &options,
             &metrics,
             &["AUTH".to_string(), "bad".to_string()],
-            &mut authed,
+            &mut session,
         )
         .await;
         assert!(wrong.starts_with("-WRONGPASS"));
@@ -820,20 +928,94 @@ mod tests {
             &options,
             &metrics,
             &["AUTH".to_string(), "secret".to_string()],
-            &mut authed,
+            &mut session,
         )
         .await;
         assert_eq!(ok, "+OK\r\n");
-        assert!(authed);
+        assert!(session.authenticated);
 
         let set_ok = execute_resp(
             &state,
             &options,
             &metrics,
             &["SET".to_string(), "k".to_string(), "v".to_string()],
-            &mut authed,
+            &mut session,
         )
         .await;
         assert_eq!(set_ok, "+OK\r\n");
+    }
+
+    #[tokio::test]
+    async fn acl_restricts_write_for_read_only_user() {
+        let state = Arc::new(Mutex::new(RedisLite::new()));
+        let metrics = Arc::new(Mutex::new(ServerMetrics::new()));
+        let acl_store =
+            AclStore::from_rules(&["reader readpass +@read".to_string()]).unwrap();
+        let options = ServerOptions {
+            bind_addr: "127.0.0.1:0".to_string(),
+            data_file: "./tmp.json".to_string(),
+            aof_file: "./tmp.aof".to_string(),
+            autoload: false,
+            autosave: false,
+            appendonly: false,
+            max_keys: None,
+            eviction_policy: EvictionPolicy::NoEviction,
+            requirepass: None,
+            log_level: LogLevel::Error,
+            acl_store,
+        };
+
+        let mut session = Session {
+            username: "default".to_string(),
+            authenticated: false,
+        };
+
+        // Before AUTH: blocked by NOAUTH.
+        let blocked = execute_resp(
+            &state,
+            &options,
+            &metrics,
+            &["GET".to_string(), "k".to_string()],
+            &mut session,
+        )
+        .await;
+        assert!(blocked.starts_with("-NOAUTH"), "expected NOAUTH, got {blocked}");
+
+        // Auth as the read-only user.
+        let auth_ok = execute_resp(
+            &state,
+            &options,
+            &metrics,
+            &["AUTH".to_string(), "reader".to_string(), "readpass".to_string()],
+            &mut session,
+        )
+        .await;
+        assert_eq!(auth_ok, "+OK\r\n");
+        assert_eq!(session.username, "reader");
+
+        // Read allowed.
+        let get_ok = execute_resp(
+            &state,
+            &options,
+            &metrics,
+            &["GET".to_string(), "k".to_string()],
+            &mut session,
+        )
+        .await;
+        assert!(!get_ok.starts_with("-NOPERM"), "GET should be allowed, got {get_ok}");
+
+        // Write denied by ACL.
+        let set_denied = execute_resp(
+            &state,
+            &options,
+            &metrics,
+            &["SET".to_string(), "k".to_string(), "v".to_string()],
+            &mut session,
+        )
+        .await;
+        assert!(
+            set_denied.starts_with("-NOPERM"),
+            "SET should be denied for read-only user, got {set_denied}"
+        );
     }
 }
