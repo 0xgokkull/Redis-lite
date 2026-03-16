@@ -80,6 +80,7 @@ Security behavior in current server mode:
 - Optional password auth via `--requirepass <password>`
 - When enabled, write/admin commands return `NOAUTH` until `AUTH` succeeds
 - Graceful shutdown on `Ctrl+C` with final snapshot save when `--autosave` is enabled
+- Structured logs with request tracing at `--log-level debug`
 
 ### Run in Docker
 
@@ -141,7 +142,7 @@ The CLI supports production-friendly startup options:
 - `--data-file <file>`
 - `--autoload` / `--no-autoload`
 - `--autosave` / `--no-autosave`
-- `--log-level <level>`
+- `--log-level <level>` (`error`, `info`, `debug`)
 - `--requirepass <password>`
 
 Environment variables are also supported:
