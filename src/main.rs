@@ -18,7 +18,7 @@ fn run_repl() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let config = AppConfig::load(&args)?;
-    let mut app = RedisLite::new();
+    let mut app = RedisLite::with_limits(config.max_keys, config.eviction_policy);
 
     if config.autoload {
         match app.load_from_path(&config.data_file) {
@@ -31,14 +31,31 @@ fn run_repl() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(error) => return Err(Box::new(error)),
         }
+
+        if config.appendonly {
+            match app.replay_aof(&config.aof_file) {
+                Ok(count) => println!("replayed {count} AOF commands from {}", config.aof_file),
+                Err(redis_lite::error::AppError::Io(e))
+                    if e.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    eprintln!("AOF replay skipped: file not found at {}", config.aof_file);
+                }
+                Err(error) => return Err(Box::new(error)),
+            }
+        }
     }
 
     let stdin = io::stdin();
     let mut input = String::new();
 
     println!(
-        "redis-lite ready. Type HELP for commands. (autosave: {}, data file: {})",
-        config.autosave, config.data_file
+        "redis-lite ready. Type HELP for commands. (autosave: {}, appendonly: {}, max_keys: {:?}, eviction: {:?}, data file: {}, aof file: {})",
+        config.autosave,
+        config.appendonly,
+        config.max_keys,
+        config.eviction_policy,
+        config.data_file,
+        config.aof_file
     );
 
     loop {
@@ -58,7 +75,13 @@ fn run_repl() -> Result<(), Box<dyn std::error::Error>> {
             None
         };
 
-        match app.execute_line_with_autosave(&input, autosave_target) {
+        let aof_target = if config.appendonly {
+            Some(config.aof_file.as_str())
+        } else {
+            None
+        };
+
+        match app.execute_line_with_persistence(&input, autosave_target, aof_target) {
             Ok(Some(RuntimeMessage::Continue(message))) => println!("{message}"),
             Ok(Some(RuntimeMessage::Exit(message))) => {
                 println!("{message}");
