@@ -453,6 +453,16 @@ pub fn parse_command(input: &str) -> Result<Command, AppError> {
             }
             Ok(Command::Role)
         }
+        "INFO" => {
+            // Keep behavior simple and Redis-like for now: INFO or INFO <section> are accepted.
+            if parts.next().is_some() && parts.next().is_some() {
+                return Err(AppError::InvalidArgs {
+                    command: "INFO".to_string(),
+                    expected: "no arguments or one optional section",
+                });
+            }
+            Ok(Command::Info)
+        }
         "REPLCONF" => {
             let Some(subcommand) = parts.next() else {
                 return Err(AppError::InvalidArgs {
@@ -718,6 +728,12 @@ mod tests {
     fn parses_role_command() {
         let command = parse_command("ROLE").expect("ROLE should parse");
         assert_eq!(command, Command::Role);
+    }
+
+    #[test]
+    fn parses_info_command() {
+        let command = parse_command("INFO").expect("INFO should parse");
+        assert_eq!(command, Command::Info);
     }
 
     #[test]
