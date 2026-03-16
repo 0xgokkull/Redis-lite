@@ -6,6 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::config::EvictionPolicy;
 use crate::error::AppError;
+use crate::logging::LogLevel;
 use crate::RedisLite;
 
 #[derive(Debug, Default)]
@@ -36,9 +37,14 @@ pub struct ServerOptions {
     pub max_keys: Option<usize>,
     pub eviction_policy: EvictionPolicy,
     pub requirepass: Option<String>,
+    pub log_level: LogLevel,
 }
 
 pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
+    options
+        .log_level
+        .log(LogLevel::Info, &format!("starting RESP server on {}", options.bind_addr));
+
     let listener = TcpListener::bind(&options.bind_addr)
         .await
         .map_err(|e| AppError::Config(format!("failed to bind {}: {e}", options.bind_addr)))?;
@@ -72,7 +78,9 @@ pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
     let shared = Arc::new(Mutex::new(app));
     let metrics = Arc::new(Mutex::new(ServerMetrics::new()));
 
-    println!("redis-lite RESP server listening on {}", options.bind_addr);
+    options
+        .log_level
+        .log(LogLevel::Info, &format!("RESP server listening on {}", options.bind_addr));
 
     loop {
         let accepted = tokio::select! {
@@ -95,6 +103,10 @@ pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
             break;
         };
 
+        options
+            .log_level
+            .log(LogLevel::Debug, &format!("accepted connection from {peer}"));
+
         let state = Arc::clone(&shared);
         let metrics_clone = Arc::clone(&metrics);
         let options_clone = options.clone();
@@ -106,19 +118,29 @@ pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
         }
 
         tokio::spawn(async move {
-            if let Err(error) = handle_client(stream, state, options_clone, Arc::clone(&metrics_clone)).await {
-                eprintln!("client {peer} error: {error}");
+            if let Err(error) =
+                handle_client(stream, state, options_clone.clone(), Arc::clone(&metrics_clone)).await
+            {
+                options_clone
+                    .log_level
+                    .log(LogLevel::Error, &format!("client {peer} error: {error}"));
             }
 
             let mut m = metrics_clone.lock().await;
             m.current_connections = m.current_connections.saturating_sub(1);
+
+            options_clone
+                .log_level
+                .log(LogLevel::Debug, &format!("closed connection from {peer}"));
         });
     }
 
     let app = shared.lock().await;
     if options.autosave {
         app.save_to_path(&options.data_file)?;
-        println!("final snapshot saved to {}", options.data_file);
+        options
+            .log_level
+            .log(LogLevel::Info, &format!("final snapshot saved to {}", options.data_file));
     }
 
     Ok(())
@@ -147,7 +169,19 @@ async fn handle_client(
             }
         };
 
+        let command_name = command
+            .first()
+            .map(|s| s.to_ascii_uppercase())
+            .unwrap_or_else(|| "<empty>".to_string());
+        let started = std::time::Instant::now();
+
         let response = execute_resp(&state, &options, &metrics, &command, &mut authenticated).await;
+
+        let elapsed_us = started.elapsed().as_micros();
+        options.log_level.log(
+            LogLevel::Debug,
+            &format!("command={command_name} elapsed_us={elapsed_us}"),
+        );
 
         if let Err(write_error) = write_half.write_all(response.as_bytes()).await {
             return Err(AppError::Io(write_error));
@@ -715,8 +749,11 @@ fn resp_integer(value: i64) -> String {
 mod tests {
     use std::sync::Arc;
 
-    use super::{execute_resp, read_resp_command, resp_bulk, resp_integer, ServerMetrics, ServerOptions};
+    use super::{
+        execute_resp, read_resp_command, resp_bulk, resp_integer, ServerMetrics, ServerOptions,
+    };
     use crate::config::EvictionPolicy;
+    use crate::logging::LogLevel;
     use crate::RedisLite;
     use tokio::io::BufReader;
     use tokio::sync::Mutex;
@@ -754,6 +791,7 @@ mod tests {
             max_keys: None,
             eviction_policy: EvictionPolicy::NoEviction,
             requirepass: Some("secret".to_string()),
+            log_level: LogLevel::Error,
         };
 
         let mut authed = false;
