@@ -1,4 +1,5 @@
 use redis_lite::config::AppConfig;
+use redis_lite::logging::LogLevel;
 use redis_lite::server::{run_server, ServerOptions};
 
 #[tokio::main]
@@ -32,6 +33,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let bind_addr = parse_bind_addr(&args).unwrap_or_else(|| "127.0.0.1:6379".to_string());
     let config_args = args_without_bind(&args);
     let config = AppConfig::load(&config_args)?;
+    let log_level = LogLevel::parse(&config.log_level)?;
 
     let options = ServerOptions {
         bind_addr,
@@ -43,6 +45,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         max_keys: config.max_keys,
         eviction_policy: config.eviction_policy,
         requirepass: config.requirepass,
+        log_level,
     };
 
     run_server(options).await?;
