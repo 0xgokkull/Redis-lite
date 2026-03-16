@@ -4,6 +4,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufRead
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
+use crate::config::EvictionPolicy;
 use crate::error::AppError;
 use crate::RedisLite;
 
@@ -11,8 +12,12 @@ use crate::RedisLite;
 pub struct ServerOptions {
     pub bind_addr: String,
     pub data_file: String,
+    pub aof_file: String,
     pub autoload: bool,
     pub autosave: bool,
+    pub appendonly: bool,
+    pub max_keys: Option<usize>,
+    pub eviction_policy: EvictionPolicy,
 }
 
 pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
@@ -20,7 +25,7 @@ pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
         .await
         .map_err(|e| AppError::Config(format!("failed to bind {}: {e}", options.bind_addr)))?;
 
-    let mut app = RedisLite::new();
+    let mut app = RedisLite::with_limits(options.max_keys, options.eviction_policy);
     if options.autoload {
         match app.load_from_path(&options.data_file) {
             Ok(()) => {
@@ -33,6 +38,16 @@ pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
                 );
             }
             Err(error) => return Err(error),
+        }
+
+        if options.appendonly {
+            match app.replay_aof(&options.aof_file) {
+                Ok(count) => println!("replayed {count} AOF commands from {}", options.aof_file),
+                Err(AppError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                    eprintln!("AOF replay skipped: file not found at {}", options.aof_file);
+                }
+                Err(error) => return Err(error),
+            }
         }
     }
 
@@ -127,10 +142,15 @@ async fn execute_resp(
             }
             let line = format!("SET {} {}", command[1], command[2]);
             let mut db = state.lock().await;
-            match db.execute_line_with_autosave(
+            match db.execute_line_with_persistence(
                 &line,
                 if options.autosave {
                     Some(options.data_file.as_str())
+                } else {
+                    None
+                },
+                if options.appendonly {
+                    Some(options.aof_file.as_str())
                 } else {
                     None
                 },
@@ -166,10 +186,15 @@ async fn execute_resp(
 
             for key in &command[1..] {
                 let line = format!("DELETE {key}");
-                match db.execute_line_with_autosave(
+                match db.execute_line_with_persistence(
                     &line,
                     if options.autosave {
                         Some(options.data_file.as_str())
+                    } else {
+                        None
+                    },
+                    if options.appendonly {
+                        Some(options.aof_file.as_str())
                     } else {
                         None
                     },
@@ -185,6 +210,273 @@ async fn execute_resp(
             }
 
             resp_integer(deleted_count)
+        }
+        "HSET" => {
+            if command.len() != 4 {
+                return resp_error("ERR wrong number of arguments for 'HSET'");
+            }
+            let line = format!("HSET {} {} {}", command[1], command[2], command[3]);
+            let mut db = state.lock().await;
+            match db.execute_line_with_persistence(
+                &line,
+                if options.autosave {
+                    Some(options.data_file.as_str())
+                } else {
+                    None
+                },
+                if options.appendonly {
+                    Some(options.aof_file.as_str())
+                } else {
+                    None
+                },
+            ) {
+                Ok(Some(crate::RuntimeMessage::Continue(value))) => {
+                    resp_integer(value.parse::<i64>().unwrap_or(0))
+                }
+                Ok(_) => resp_integer(0),
+                Err(error) => resp_error(&format!("ERR {error}")),
+            }
+        }
+        "HGET" => {
+            if command.len() != 3 {
+                return resp_error("ERR wrong number of arguments for 'HGET'");
+            }
+            let line = format!("HGET {} {}", command[1], command[2]);
+            let mut db = state.lock().await;
+            match db.execute_line(&line) {
+                Ok(Some(crate::RuntimeMessage::Continue(value))) => {
+                    if value == "(nil)" {
+                        resp_bulk(None)
+                    } else {
+                        resp_bulk(Some(&value))
+                    }
+                }
+                Ok(_) => resp_bulk(None),
+                Err(error) => resp_error(&format!("ERR {error}")),
+            }
+        }
+        "SADD" => {
+            if command.len() != 3 {
+                return resp_error("ERR wrong number of arguments for 'SADD'");
+            }
+            let line = format!("SADD {} {}", command[1], command[2]);
+            let mut db = state.lock().await;
+            match db.execute_line_with_persistence(
+                &line,
+                if options.autosave {
+                    Some(options.data_file.as_str())
+                } else {
+                    None
+                },
+                if options.appendonly {
+                    Some(options.aof_file.as_str())
+                } else {
+                    None
+                },
+            ) {
+                Ok(Some(crate::RuntimeMessage::Continue(value))) => {
+                    resp_integer(value.parse::<i64>().unwrap_or(0))
+                }
+                Ok(_) => resp_integer(0),
+                Err(error) => resp_error(&format!("ERR {error}")),
+            }
+        }
+        "SMEMBERS" => {
+            if command.len() != 2 {
+                return resp_error("ERR wrong number of arguments for 'SMEMBERS'");
+            }
+            let line = format!("SMEMBERS {}", command[1]);
+            let mut db = state.lock().await;
+            match db.execute_line(&line) {
+                Ok(Some(crate::RuntimeMessage::Continue(value))) => {
+                    if value == "(empty)" {
+                        "*0\r\n".to_string()
+                    } else {
+                        let items = value.split('\n').collect::<Vec<_>>();
+                        let mut response = format!("*{}\r\n", items.len());
+                        for item in items {
+                            response.push_str(&resp_bulk(Some(item)));
+                        }
+                        response
+                    }
+                }
+                Ok(_) => "*0\r\n".to_string(),
+                Err(error) => resp_error(&format!("ERR {error}")),
+            }
+        }
+        "LPUSH" => {
+            if command.len() != 3 {
+                return resp_error("ERR wrong number of arguments for 'LPUSH'");
+            }
+            let line = format!("LPUSH {} {}", command[1], command[2]);
+            let mut db = state.lock().await;
+            match db.execute_line_with_persistence(
+                &line,
+                if options.autosave {
+                    Some(options.data_file.as_str())
+                } else {
+                    None
+                },
+                if options.appendonly {
+                    Some(options.aof_file.as_str())
+                } else {
+                    None
+                },
+            ) {
+                Ok(Some(crate::RuntimeMessage::Continue(value))) => {
+                    resp_integer(value.parse::<i64>().unwrap_or(0))
+                }
+                Ok(_) => resp_integer(0),
+                Err(error) => resp_error(&format!("ERR {error}")),
+            }
+        }
+        "RPOP" => {
+            if command.len() != 2 {
+                return resp_error("ERR wrong number of arguments for 'RPOP'");
+            }
+            let line = format!("RPOP {}", command[1]);
+            let mut db = state.lock().await;
+            match db.execute_line_with_persistence(
+                &line,
+                if options.autosave {
+                    Some(options.data_file.as_str())
+                } else {
+                    None
+                },
+                if options.appendonly {
+                    Some(options.aof_file.as_str())
+                } else {
+                    None
+                },
+            ) {
+                Ok(Some(crate::RuntimeMessage::Continue(value))) => {
+                    if value == "(nil)" {
+                        resp_bulk(None)
+                    } else {
+                        resp_bulk(Some(&value))
+                    }
+                }
+                Ok(_) => resp_bulk(None),
+                Err(error) => resp_error(&format!("ERR {error}")),
+            }
+        }
+        "ZADD" => {
+            if command.len() != 4 {
+                return resp_error("ERR wrong number of arguments for 'ZADD'");
+            }
+            let line = format!("ZADD {} {} {}", command[1], command[2], command[3]);
+            let mut db = state.lock().await;
+            match db.execute_line_with_persistence(
+                &line,
+                if options.autosave {
+                    Some(options.data_file.as_str())
+                } else {
+                    None
+                },
+                if options.appendonly {
+                    Some(options.aof_file.as_str())
+                } else {
+                    None
+                },
+            ) {
+                Ok(Some(crate::RuntimeMessage::Continue(value))) => {
+                    resp_integer(value.parse::<i64>().unwrap_or(0))
+                }
+                Ok(_) => resp_integer(0),
+                Err(error) => resp_error(&format!("ERR {error}")),
+            }
+        }
+        "ZRANGE" => {
+            if command.len() != 4 {
+                return resp_error("ERR wrong number of arguments for 'ZRANGE'");
+            }
+            let line = format!("ZRANGE {} {} {}", command[1], command[2], command[3]);
+            let mut db = state.lock().await;
+            match db.execute_line(&line) {
+                Ok(Some(crate::RuntimeMessage::Continue(value))) => {
+                    if value == "(empty)" {
+                        "*0\r\n".to_string()
+                    } else {
+                        let items = value.split('\n').collect::<Vec<_>>();
+                        let mut response = format!("*{}\r\n", items.len());
+                        for item in items {
+                            response.push_str(&resp_bulk(Some(item)));
+                        }
+                        response
+                    }
+                }
+                Ok(_) => "*0\r\n".to_string(),
+                Err(error) => resp_error(&format!("ERR {error}")),
+            }
+        }
+        "EXPIRE" => {
+            if command.len() != 3 {
+                return resp_error("ERR wrong number of arguments for 'EXPIRE'");
+            }
+            let line = format!("EXPIRE {} {}", command[1], command[2]);
+            let mut db = state.lock().await;
+            match db.execute_line_with_persistence(
+                &line,
+                if options.autosave {
+                    Some(options.data_file.as_str())
+                } else {
+                    None
+                },
+                if options.appendonly {
+                    Some(options.aof_file.as_str())
+                } else {
+                    None
+                },
+            ) {
+                Ok(Some(crate::RuntimeMessage::Continue(value))) => {
+                    let parsed = value.parse::<i64>().unwrap_or(0);
+                    resp_integer(parsed)
+                }
+                Ok(_) => resp_integer(0),
+                Err(error) => resp_error(&format!("ERR {error}")),
+            }
+        }
+        "TTL" => {
+            if command.len() != 2 {
+                return resp_error("ERR wrong number of arguments for 'TTL'");
+            }
+            let line = format!("TTL {}", command[1]);
+            let mut db = state.lock().await;
+            match db.execute_line(&line) {
+                Ok(Some(crate::RuntimeMessage::Continue(value))) => {
+                    let parsed = value.parse::<i64>().unwrap_or(-2);
+                    resp_integer(parsed)
+                }
+                Ok(_) => resp_integer(-2),
+                Err(error) => resp_error(&format!("ERR {error}")),
+            }
+        }
+        "PERSIST" => {
+            if command.len() != 2 {
+                return resp_error("ERR wrong number of arguments for 'PERSIST'");
+            }
+            let line = format!("PERSIST {}", command[1]);
+            let mut db = state.lock().await;
+            match db.execute_line_with_persistence(
+                &line,
+                if options.autosave {
+                    Some(options.data_file.as_str())
+                } else {
+                    None
+                },
+                if options.appendonly {
+                    Some(options.aof_file.as_str())
+                } else {
+                    None
+                },
+            ) {
+                Ok(Some(crate::RuntimeMessage::Continue(value))) => {
+                    let parsed = value.parse::<i64>().unwrap_or(0);
+                    resp_integer(parsed)
+                }
+                Ok(_) => resp_integer(0),
+                Err(error) => resp_error(&format!("ERR {error}")),
+            }
         }
         "SAVE" => {
             let target = if command.len() == 2 {
