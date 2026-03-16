@@ -57,6 +57,8 @@ Current RESP commands in server mode:
 - `SET <key> <value>`
 - `GET <key>`
 - `DEL <key> [key ...]`
+- `ROLE`
+- `INFO [section]`
 - `SAVE [file]`
 - `QUIT`
 
