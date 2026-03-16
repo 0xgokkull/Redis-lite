@@ -30,6 +30,7 @@ pub struct AppConfig {
     pub appendonly: bool,
     pub max_keys: Option<usize>,
     pub eviction_policy: EvictionPolicy,
+    pub requirepass: Option<String>,
     pub log_level: String,
 }
 
@@ -42,6 +43,7 @@ struct PartialConfig {
     appendonly: Option<bool>,
     max_keys: Option<usize>,
     eviction_policy: Option<EvictionPolicy>,
+    requirepass: Option<String>,
     log_level: Option<String>,
 }
 
@@ -55,6 +57,7 @@ impl Default for AppConfig {
             appendonly: false,
             max_keys: None,
             eviction_policy: EvictionPolicy::NoEviction,
+            requirepass: None,
             log_level: "info".to_string(),
         }
     }
@@ -74,13 +77,15 @@ impl AppConfig {
     --no-appendonly         Disable append-only command logging\n\
     --max-keys <n>          Maximum number of keys kept in memory\n\
     --eviction-policy <p>   Eviction policy: noeviction or allkeys-lru\n\
+        --requirepass <pass>    Require AUTH before write/admin commands\n\
   --log-level <level>     Logging level text (info, debug, etc.)\n\
   --help                  Print this help\n\
 \n\
 Environment variables:\n\
   REDIS_LITE_CONFIG, REDIS_LITE_DATA_FILE, REDIS_LITE_AUTOLOAD,\n\
     REDIS_LITE_AOF_FILE, REDIS_LITE_AUTOSAVE, REDIS_LITE_APPENDONLY,\n\
-    REDIS_LITE_MAX_KEYS, REDIS_LITE_EVICTION_POLICY, REDIS_LITE_LOG_LEVEL\n"
+    REDIS_LITE_MAX_KEYS, REDIS_LITE_EVICTION_POLICY, REDIS_LITE_REQUIREPASS,\n\
+    REDIS_LITE_LOG_LEVEL\n"
     }
 
     pub fn load(args: &[String]) -> Result<Self, AppError> {
@@ -182,6 +187,13 @@ fn parse_args(args: &[String]) -> Result<ParsedArgs, AppError> {
                 parsed.values.eviction_policy = Some(EvictionPolicy::parse(value)?);
                 index += 2;
             }
+            "--requirepass" => {
+                let value = args.get(index + 1).ok_or_else(|| {
+                    AppError::Config("--requirepass requires a value".to_string())
+                })?;
+                parsed.values.requirepass = Some(value.clone());
+                index += 2;
+            }
             "--log-level" => {
                 let value = args
                     .get(index + 1)
@@ -227,6 +239,7 @@ fn parse_env() -> Result<PartialConfig, AppError> {
         .ok()
         .map(|raw| EvictionPolicy::parse(&raw))
         .transpose()?;
+    let requirepass = env::var("REDIS_LITE_REQUIREPASS").ok();
     let log_level = env::var("REDIS_LITE_LOG_LEVEL").ok();
 
     Ok(PartialConfig {
@@ -237,6 +250,7 @@ fn parse_env() -> Result<PartialConfig, AppError> {
         appendonly,
         max_keys,
         eviction_policy,
+        requirepass,
         log_level,
     })
 }
@@ -268,6 +282,9 @@ fn apply_partial(config: &mut AppConfig, partial: &PartialConfig) {
     }
     if let Some(value) = partial.eviction_policy {
         config.eviction_policy = value;
+    }
+    if let Some(value) = &partial.requirepass {
+        config.requirepass = Some(value.clone());
     }
     if let Some(value) = &partial.log_level {
         config.log_level = value.clone();
@@ -325,6 +342,8 @@ mod tests {
             "10".to_string(),
             "--eviction-policy".to_string(),
             "allkeys-lru".to_string(),
+            "--requirepass".to_string(),
+            "secret".to_string(),
             "--log-level".to_string(),
             "debug".to_string(),
         ];
@@ -337,6 +356,7 @@ mod tests {
         assert!(config.appendonly);
         assert_eq!(config.max_keys, Some(10));
         assert_eq!(config.eviction_policy, EvictionPolicy::AllKeysLru);
+        assert_eq!(config.requirepass, Some("secret".to_string()));
         assert_eq!(config.log_level, "debug");
     }
 }
