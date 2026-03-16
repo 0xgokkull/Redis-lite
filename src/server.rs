@@ -8,6 +8,23 @@ use crate::config::EvictionPolicy;
 use crate::error::AppError;
 use crate::RedisLite;
 
+#[derive(Debug, Default)]
+struct ServerMetrics {
+    started_at_secs: u64,
+    current_connections: u64,
+    total_connections_received: u64,
+}
+
+impl ServerMetrics {
+    fn new() -> Self {
+        Self {
+            started_at_secs: now_secs(),
+            current_connections: 0,
+            total_connections_received: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
     pub bind_addr: String,
@@ -52,6 +69,7 @@ pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
     }
 
     let shared = Arc::new(Mutex::new(app));
+    let metrics = Arc::new(Mutex::new(ServerMetrics::new()));
 
     println!("redis-lite RESP server listening on {}", options.bind_addr);
 
@@ -62,12 +80,22 @@ pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
             .map_err(|e| AppError::Config(format!("failed to accept connection: {e}")))?;
 
         let state = Arc::clone(&shared);
+        let metrics_clone = Arc::clone(&metrics);
         let options_clone = options.clone();
 
+        {
+            let mut m = metrics.lock().await;
+            m.total_connections_received = m.total_connections_received.saturating_add(1);
+            m.current_connections = m.current_connections.saturating_add(1);
+        }
+
         tokio::spawn(async move {
-            if let Err(error) = handle_client(stream, state, options_clone).await {
+            if let Err(error) = handle_client(stream, state, options_clone, Arc::clone(&metrics_clone)).await {
                 eprintln!("client {peer} error: {error}");
             }
+
+            let mut m = metrics_clone.lock().await;
+            m.current_connections = m.current_connections.saturating_sub(1);
         });
     }
 }
@@ -76,6 +104,7 @@ async fn handle_client(
     stream: TcpStream,
     state: Arc<Mutex<RedisLite>>,
     options: ServerOptions,
+    metrics: Arc<Mutex<ServerMetrics>>,
 ) -> Result<(), AppError> {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
@@ -93,7 +122,7 @@ async fn handle_client(
             }
         };
 
-        let response = execute_resp(&state, &options, &command).await;
+        let response = execute_resp(&state, &options, &metrics, &command).await;
 
         if let Err(write_error) = write_half.write_all(response.as_bytes()).await {
             return Err(AppError::Io(write_error));
@@ -112,6 +141,7 @@ async fn handle_client(
 async fn execute_resp(
     state: &Arc<Mutex<RedisLite>>,
     options: &ServerOptions,
+    metrics: &Arc<Mutex<ServerMetrics>>,
     command: &[String],
 ) -> String {
     if command.is_empty() {
@@ -493,8 +523,47 @@ async fn execute_resp(
                 Err(error) => resp_error(&format!("ERR {error}")),
             }
         }
+        "ROLE" => {
+            if command.len() != 1 {
+                return resp_error("ERR wrong number of arguments for 'ROLE'");
+            }
+
+            let mut db = state.lock().await;
+            match db.execute_line("ROLE") {
+                Ok(Some(crate::RuntimeMessage::Continue(value))) => resp_bulk(Some(&value)),
+                Ok(_) => resp_bulk(None),
+                Err(error) => resp_error(&format!("ERR {error}")),
+            }
+        }
+        "INFO" => {
+            if command.len() > 2 {
+                return resp_error("ERR wrong number of arguments for 'INFO'");
+            }
+
+            let mut db = state.lock().await;
+            let base_info = match db.execute_line("INFO") {
+                Ok(Some(crate::RuntimeMessage::Continue(value))) => value,
+                Ok(_) => String::new(),
+                Err(error) => return resp_error(&format!("ERR {error}")),
+            };
+
+            let m = metrics.lock().await;
+            let uptime = now_secs().saturating_sub(m.started_at_secs);
+            let payload = format!(
+                "{}# Connections\r\nconnected_clients:{}\r\ntotal_connections_received:{}\r\nserver_uptime_in_seconds:{}\r\n",
+                base_info, m.current_connections, m.total_connections_received, uptime
+            );
+            resp_bulk(Some(&payload))
+        }
         "QUIT" => "+OK\r\n".to_string(),
         _ => resp_error("ERR unknown command"),
+    }
+}
+
+fn now_secs() -> u64 {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs(),
+        Err(_) => 0,
     }
 }
 
