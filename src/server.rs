@@ -35,6 +35,7 @@ pub struct ServerOptions {
     pub appendonly: bool,
     pub max_keys: Option<usize>,
     pub eviction_policy: EvictionPolicy,
+    pub requirepass: Option<String>,
 }
 
 pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
@@ -108,6 +109,7 @@ async fn handle_client(
 ) -> Result<(), AppError> {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
+    let mut authenticated = options.requirepass.is_none();
 
     loop {
         let command = match read_resp_command(&mut reader).await {
@@ -122,7 +124,7 @@ async fn handle_client(
             }
         };
 
-        let response = execute_resp(&state, &options, &metrics, &command).await;
+        let response = execute_resp(&state, &options, &metrics, &command, &mut authenticated).await;
 
         if let Err(write_error) = write_half.write_all(response.as_bytes()).await {
             return Err(AppError::Io(write_error));
@@ -143,13 +145,33 @@ async fn execute_resp(
     options: &ServerOptions,
     metrics: &Arc<Mutex<ServerMetrics>>,
     command: &[String],
+    authenticated: &mut bool,
 ) -> String {
     if command.is_empty() {
         return resp_error("ERR empty command");
     }
 
     let verb = command[0].to_ascii_uppercase();
+
+    if options.requirepass.is_some() && !*authenticated && !is_auth_exempt_command(&verb) {
+        return resp_error("NOAUTH Authentication required");
+    }
+
     match verb.as_str() {
+        "AUTH" => {
+            if command.len() != 2 {
+                return resp_error("ERR wrong number of arguments for 'AUTH'");
+            }
+
+            match &options.requirepass {
+                Some(password) if password == &command[1] => {
+                    *authenticated = true;
+                    "+OK\r\n".to_string()
+                }
+                Some(_) => resp_error("WRONGPASS invalid password"),
+                None => "+OK\r\n".to_string(),
+            }
+        }
         "PING" => {
             if command.len() > 2 {
                 return resp_error("ERR wrong number of arguments for 'PING'");
@@ -567,6 +589,10 @@ fn now_secs() -> u64 {
     }
 }
 
+fn is_auth_exempt_command(verb: &str) -> bool {
+    matches!(verb, "AUTH" | "PING" | "ECHO" | "QUIT")
+}
+
 async fn read_resp_command<R>(reader: &mut BufReader<R>) -> Result<Option<Vec<String>>, String>
 where
     R: AsyncRead + Unpin,
@@ -664,8 +690,13 @@ fn resp_integer(value: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_resp_command, resp_bulk, resp_integer};
+    use std::sync::Arc;
+
+    use super::{execute_resp, read_resp_command, resp_bulk, resp_integer, ServerMetrics, ServerOptions};
+    use crate::config::EvictionPolicy;
+    use crate::RedisLite;
     use tokio::io::BufReader;
+    use tokio::sync::Mutex;
 
     #[tokio::test]
     async fn parses_resp_array_command() {
@@ -684,5 +715,64 @@ mod tests {
         assert_eq!(resp_bulk(Some("ok")), "$2\r\nok\r\n");
         assert_eq!(resp_bulk(None), "$-1\r\n");
         assert_eq!(resp_integer(2), ":2\r\n");
+    }
+
+    #[tokio::test]
+    async fn auth_required_blocks_write_until_auth() {
+        let state = Arc::new(Mutex::new(RedisLite::new()));
+        let metrics = Arc::new(Mutex::new(ServerMetrics::new()));
+        let options = ServerOptions {
+            bind_addr: "127.0.0.1:0".to_string(),
+            data_file: "./tmp.json".to_string(),
+            aof_file: "./tmp.aof".to_string(),
+            autoload: false,
+            autosave: false,
+            appendonly: false,
+            max_keys: None,
+            eviction_policy: EvictionPolicy::NoEviction,
+            requirepass: Some("secret".to_string()),
+        };
+
+        let mut authed = false;
+        let blocked = execute_resp(
+            &state,
+            &options,
+            &metrics,
+            &["SET".to_string(), "k".to_string(), "v".to_string()],
+            &mut authed,
+        )
+        .await;
+        assert!(blocked.starts_with("-NOAUTH"));
+
+        let wrong = execute_resp(
+            &state,
+            &options,
+            &metrics,
+            &["AUTH".to_string(), "bad".to_string()],
+            &mut authed,
+        )
+        .await;
+        assert!(wrong.starts_with("-WRONGPASS"));
+
+        let ok = execute_resp(
+            &state,
+            &options,
+            &metrics,
+            &["AUTH".to_string(), "secret".to_string()],
+            &mut authed,
+        )
+        .await;
+        assert_eq!(ok, "+OK\r\n");
+        assert!(authed);
+
+        let set_ok = execute_resp(
+            &state,
+            &options,
+            &metrics,
+            &["SET".to_string(), "k".to_string(), "v".to_string()],
+            &mut authed,
+        )
+        .await;
+        assert_eq!(set_ok, "+OK\r\n");
     }
 }
