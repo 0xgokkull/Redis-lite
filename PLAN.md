@@ -78,3 +78,11 @@
 - Startup config support for `requirepass` via args and env (`REDIS_LITE_REQUIREPASS`)
 - Added integration-style server unit test for auth flow (deny, wrong pass, success)
 
+### Step 9 - Deployment Hardening (Completed)
+
+- Graceful server shutdown with `Ctrl+C` signal handling
+- Final snapshot flush on shutdown when autosave is enabled
+- Startup config validation (non-empty paths, non-empty requirepass, max-keys > 0)
+- Added container packaging files: `Dockerfile` and `.dockerignore`
+- README deployment guidance for secure server startup and Docker run
+
