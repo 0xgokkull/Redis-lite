@@ -1,0 +1,6 @@
+target
+.git
+.github
+**/*.swp
+**/*.tmp
+Dockerfile
