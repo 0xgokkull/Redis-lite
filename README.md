@@ -41,7 +41,7 @@ You can use this project in two ways:
 Start server mode on default Redis port:
 
 ```text
-cargo run --bin redis-lite-server -- --bind 127.0.0.1:6379 --autoload --autosave
+cargo run --bin redis-lite-server -- --bind 127.0.0.1:6379 --autoload --autosave --appendonly
 ```
 
 Quick protocol test using netcat:
@@ -59,6 +59,12 @@ Current RESP commands in server mode:
 - `DEL <key> [key ...]`
 - `SAVE [file]`
 - `QUIT`
+
+Persistence behavior in current server mode:
+
+- Snapshot (RDB-like JSON) with atomic writes
+- AOF command logging for mutating commands (`SET`, `DEL`)
+- Startup recovery order: snapshot first, then AOF replay
 
 ### Add as dependency
 
