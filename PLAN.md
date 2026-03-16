@@ -88,9 +88,18 @@
 
 ### Step 10 - Operational Logging & Tracing (Completed)
 
-- Typed log levels with validation (`error`, `info`, `debug`)
-- Central logging module for consistent message formatting
-- Server startup, connection lifecycle, and shutdown logs
-- Per-command debug tracing with command name and latency (microseconds)
-- Config test coverage for invalid log level rejection
+
+### Step 11 - Command-Level ACL (Completed)
+
+- New `src/acl.rs` module: `CommandCategory` enum (Read / Write / Admin), `AclUser`, `AclStore`
+- ACL rule format: `<name> <password|nopass> [+@all|+@read|+@write|+@admin|-@...]`
+- `--acl-rule` CLI flag (repeatable) and `REDIS_LITE_ACL_RULES` env var (`;`-separated)
+- ACL rules validated at startup via `validate_config()`
+- Per-connection `Session` struct tracks authenticated username
+- `AUTH [username] password` supports both single-arg (legacy) and two-arg (ACL) forms
+- `NOPERM` response when an authenticated user lacks the required category permission
+- Connection-level commands (`AUTH`, `QUIT`, `ACLWHOAMI`, `ACLCAT`) always bypass ACL check
+- New RESP commands: `ACLWHOAMI`, `ACLCAT [category]`, `ACLLIST`
+- Test: `acl_restricts_write_for_read_only_user` exercises full ACL auth → deny write → allow read flow
+- Test count: 75 passing
 
