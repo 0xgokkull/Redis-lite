@@ -50,6 +50,15 @@ With password protection enabled:
 cargo run --bin redis-lite-server -- --bind 127.0.0.1:6379 --autoload --autosave --appendonly --requirepass secret
 ```
 
+With command-level ACL enabled:
+
+```text
+cargo run --bin redis-lite-server -- --bind 127.0.0.1:6379 --autoload --autosave --appendonly \
+    --acl-rule "default nopass +@read" \
+    --acl-rule "writer writerpass +@read +@write" \
+    --acl-rule "admin adminpass +@all"
+```
+
 Quick protocol test using netcat:
 
 ```text
@@ -61,11 +70,15 @@ Current RESP commands in server mode:
 - `PING [message]`
 - `ECHO <message>`
 - `AUTH <password>`
+- `AUTH <username> <password>`
 - `SET <key> <value>`
 - `GET <key>`
 - `DEL <key> [key ...]`
 - `ROLE`
 - `INFO [section]`
+- `ACLWHOAMI`
+- `ACLCAT [category]`
+- `ACLLIST`
 - `SAVE [file]`
 - `QUIT`
 
@@ -79,6 +92,12 @@ Security behavior in current server mode:
 
 - Optional password auth via `--requirepass <password>`
 - When enabled, write/admin commands return `NOAUTH` until `AUTH` succeeds
+- Optional multi-user ACL rules via repeatable `--acl-rule` flags
+- ACL categories: `@read`, `@write`, `@admin`, and `@all`
+- In ACL mode, authenticated users receive `NOPERM` for commands outside their category grants
+- `ACLWHOAMI` reports the current authenticated user
+- `ACLCAT` lists categories or the commands inside one category
+- `ACLLIST` shows configured users with masked passwords
 - Graceful shutdown on `Ctrl+C` with final snapshot save when `--autosave` is enabled
 - Structured logs with request tracing at `--log-level debug`
 
@@ -144,6 +163,21 @@ The CLI supports production-friendly startup options:
 - `--autosave` / `--no-autosave`
 - `--log-level <level>` (`error`, `info`, `debug`)
 - `--requirepass <password>`
+- `--acl-rule <rule>`
+
+ACL rule format:
+
+```text
+<name> <password|nopass> [+@read|+@write|+@admin|+@all|-@read|-@write|-@admin|-@all] ...
+```
+
+Examples:
+
+```text
+default nopass +@read
+writer writerpass +@read +@write
+admin adminpass +@all
+```
 
 Environment variables are also supported:
 
@@ -153,6 +187,7 @@ Environment variables are also supported:
 - `REDIS_LITE_AUTOSAVE`
 - `REDIS_LITE_LOG_LEVEL`
 - `REDIS_LITE_REQUIREPASS`
+- `REDIS_LITE_ACL_RULES` (semicolon-separated ACL rules)
 
 ---
 
