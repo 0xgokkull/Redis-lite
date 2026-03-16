@@ -86,3 +86,11 @@
 - Added container packaging files: `Dockerfile` and `.dockerignore`
 - README deployment guidance for secure server startup and Docker run
 
+### Step 10 - Operational Logging & Tracing (Completed)
+
+- Typed log levels with validation (`error`, `info`, `debug`)
+- Central logging module for consistent message formatting
+- Server startup, connection lifecycle, and shutdown logs
+- Per-command debug tracing with command name and latency (microseconds)
+- Config test coverage for invalid log level rejection
+
