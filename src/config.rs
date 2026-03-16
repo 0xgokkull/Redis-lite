@@ -106,8 +106,35 @@ Environment variables:\n\
         apply_partial(&mut config, &file_partial);
         apply_partial(&mut config, &env_partial);
         apply_partial(&mut config, &args_partial.values);
+        validate_config(&config)?;
         Ok(config)
     }
+}
+
+fn validate_config(config: &AppConfig) -> Result<(), AppError> {
+    if config.data_file.trim().is_empty() {
+        return Err(AppError::Config("data file path cannot be empty".to_string()));
+    }
+
+    if config.aof_file.trim().is_empty() {
+        return Err(AppError::Config("AOF file path cannot be empty".to_string()));
+    }
+
+    if let Some(max_keys) = config.max_keys {
+        if max_keys == 0 {
+            return Err(AppError::Config("max-keys must be greater than 0".to_string()));
+        }
+    }
+
+    if let Some(password) = &config.requirepass {
+        if password.trim().is_empty() {
+            return Err(AppError::Config(
+                "requirepass cannot be empty or whitespace".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -358,5 +385,29 @@ mod tests {
         assert_eq!(config.eviction_policy, EvictionPolicy::AllKeysLru);
         assert_eq!(config.requirepass, Some("secret".to_string()));
         assert_eq!(config.log_level, "debug");
+    }
+
+    #[test]
+    fn rejects_zero_max_keys() {
+        let args = vec![
+            "redis-lite".to_string(),
+            "--max-keys".to_string(),
+            "0".to_string(),
+        ];
+
+        let result = AppConfig::load(&args);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_empty_requirepass() {
+        let args = vec![
+            "redis-lite".to_string(),
+            "--requirepass".to_string(),
+            "   ".to_string(),
+        ];
+
+        let result = AppConfig::load(&args);
+        assert!(result.is_err());
     }
 }
