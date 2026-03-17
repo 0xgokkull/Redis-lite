@@ -1,7 +1,14 @@
 use std::io::{self, Write};
 
+use redis_lite::command::Command;
 use redis_lite::config::AppConfig;
+use redis_lite::parser::parse_command;
 use redis_lite::{RedisLite, RuntimeMessage};
+
+#[derive(Default)]
+struct ReplTransactionState {
+    queued: Vec<String>,
+}
 
 fn main() {
     if let Err(error) = run_repl() {
@@ -47,6 +54,7 @@ fn run_repl() -> Result<(), Box<dyn std::error::Error>> {
 
     let stdin = io::stdin();
     let mut input = String::new();
+    let mut transaction = None::<ReplTransactionState>;
 
     println!(
         "redis-lite ready. Type HELP for commands. (autosave: {}, appendonly: {}, max_keys: {:?}, eviction: {:?}, data file: {}, aof file: {})",
@@ -80,6 +88,67 @@ fn run_repl() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             None
         };
+
+        let trimmed = input.trim();
+        match parse_command(trimmed) {
+            Ok(Command::Multi) => {
+                if transaction.is_some() {
+                    eprintln!("error: MULTI calls cannot be nested");
+                } else {
+                    transaction = Some(ReplTransactionState::default());
+                    println!("OK");
+                }
+                continue;
+            }
+            Ok(Command::Discard) => {
+                if transaction.take().is_some() {
+                    println!("OK");
+                } else {
+                    eprintln!("error: DISCARD without active MULTI");
+                }
+                continue;
+            }
+            Ok(Command::Exec) => {
+                let Some(mut queued) = transaction.take() else {
+                    eprintln!("error: EXEC without active MULTI");
+                    continue;
+                };
+
+                if queued.queued.is_empty() {
+                    println!("(empty)");
+                    continue;
+                }
+
+                for line in queued.queued.drain(..) {
+                    match app.execute_line_with_persistence(&line, autosave_target, aof_target) {
+                        Ok(Some(RuntimeMessage::Continue(message))) => println!("{message}"),
+                        Ok(Some(RuntimeMessage::Exit(message))) => {
+                            println!("{message}");
+                            return Ok(());
+                        }
+                        Ok(None) => {}
+                        Err(error) => eprintln!("{error}"),
+                    }
+                }
+                continue;
+            }
+            Ok(command) => {
+                if let Some(state) = &mut transaction {
+                    if matches!(command, Command::Exit) {
+                        eprintln!("error: EXIT cannot be queued inside MULTI");
+                        continue;
+                    }
+                    state.queued.push(trimmed.to_string());
+                    println!("QUEUED");
+                    continue;
+                }
+            }
+            Err(redis_lite::error::AppError::EmptyInput) => continue,
+            Err(error) => {
+                eprintln!("{error}");
+                continue;
+            }
+        }
 
         match app.execute_line_with_persistence(&input, autosave_target, aof_target) {
             Ok(Some(RuntimeMessage::Continue(message))) => println!("{message}"),
