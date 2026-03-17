@@ -79,6 +79,9 @@ pub enum Command {
         replication_id: String,
         offset: i64,
     },
+    Multi,
+    Exec,
+    Discard,
     Info,
     List,
     Help,
@@ -108,6 +111,9 @@ Available commands:\n\
   SLAVEOF <host> <p>  Replicate from primary (SLAVEOF NO ONE to stop)\n\
   ROLE                Show if role is master/slave and replication info\n\
     INFO                Show runtime server and stats information\n\
+    MULTI               Start queueing commands for transactional EXEC\n\
+    EXEC                Run queued transactional commands\n\
+    DISCARD             Drop queued transactional commands\n\
   LIST                Show all stored entries\n\
   HELP                Show this help\n\
   EXIT                Quit the application\n";
