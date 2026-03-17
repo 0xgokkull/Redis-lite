@@ -88,6 +88,12 @@
 
 ### Step 10 - Operational Logging & Tracing (Completed)
 
+- Typed log levels with validation (`error`, `info`, `debug`)
+- Central logging module for consistent message formatting
+- Server startup, connection lifecycle, and shutdown logs
+- Per-command debug tracing with command name and latency (microseconds)
+- Config test coverage for invalid log level rejection
+
 
 ### Step 11 - Command-Level ACL (Completed)
 
@@ -102,4 +108,15 @@
 - New RESP commands: `ACLWHOAMI`, `ACLCAT [category]`, `ACLLIST`
 - Test: `acl_restricts_write_for_read_only_user` exercises full ACL auth → deny write → allow read flow
 - Test count: 75 passing
+
+### Step 12 - Transactions (Completed)
+
+- Added transactional command parsing for `MULTI`, `EXEC`, and `DISCARD`
+- CLI REPL now supports queueing commands inside `MULTI` and replaying them with `EXEC`
+- RESP server now tracks per-connection transaction queue state
+- RESP semantics: non-control commands return `+QUEUED` while in `MULTI`
+- `EXEC` returns a RESP array with one element per queued command response
+- `DISCARD` clears queued commands and exits transactional mode
+- Guardrails for nested `MULTI` and `EXEC`/`DISCARD` without active transaction
+- Added server tests covering queue/execute and discard behavior
 
