@@ -115,6 +115,16 @@ impl RedisLite {
             Err(error) => return Err(error),
         };
 
+        let message = self.execute_parsed_with_persistence(command, autosave_file, aof_file)?;
+        Ok(Some(message))
+    }
+
+    pub fn execute_parsed_with_persistence(
+        &mut self,
+        command: Command,
+        autosave_file: Option<&str>,
+        aof_file: Option<&str>,
+    ) -> Result<RuntimeMessage, AppError> {
         let append_to_aof = command_appends_to_aof(&command);
         let mutates_state = command_mutates_state(&command);
         let message = self.execute_command(command.clone())?;
@@ -131,7 +141,7 @@ impl RedisLite {
             }
         }
 
-        Ok(Some(message))
+        Ok(message)
     }
 
     pub fn save_to_path(&self, file: &str) -> Result<(), AppError> {
@@ -476,6 +486,9 @@ impl RedisLite {
                 Ok(RuntimeMessage::Continue(info))
             }
             Command::Info => Ok(RuntimeMessage::Continue(self.format_info())),
+            Command::Multi | Command::Exec | Command::Discard => Err(AppError::Config(
+                "transaction commands require session context".to_string(),
+            )),
             Command::Replconf { subcommand, args } => {
                 match subcommand.to_lowercase().as_str() {
                     "listening-port" => Ok(RuntimeMessage::Continue("OK".to_string())),
