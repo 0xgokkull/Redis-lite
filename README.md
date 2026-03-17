@@ -76,6 +76,9 @@ Current RESP commands in server mode:
 - `DEL <key> [key ...]`
 - `ROLE`
 - `INFO [section]`
+- `MULTI`
+- `EXEC`
+- `DISCARD`
 - `ACLWHOAMI`
 - `ACLCAT [category]`
 - `ACLLIST`
@@ -98,6 +101,8 @@ Security behavior in current server mode:
 - `ACLWHOAMI` reports the current authenticated user
 - `ACLCAT` lists categories or the commands inside one category
 - `ACLLIST` shows configured users with masked passwords
+- Transactions are per-connection (`MULTI` / `EXEC` / `DISCARD`)
+- While inside `MULTI`, queueable commands return `QUEUED` and execute only at `EXEC`
 - Graceful shutdown on `Ctrl+C` with final snapshot save when `--autosave` is enabled
 - Structured logs with request tracing at `--log-level debug`
 
