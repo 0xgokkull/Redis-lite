@@ -463,6 +463,33 @@ pub fn parse_command(input: &str) -> Result<Command, AppError> {
             }
             Ok(Command::Info)
         }
+        "MULTI" => {
+            if parts.next().is_some() {
+                return Err(AppError::InvalidArgs {
+                    command: "MULTI".to_string(),
+                    expected: "no arguments",
+                });
+            }
+            Ok(Command::Multi)
+        }
+        "EXEC" => {
+            if parts.next().is_some() {
+                return Err(AppError::InvalidArgs {
+                    command: "EXEC".to_string(),
+                    expected: "no arguments",
+                });
+            }
+            Ok(Command::Exec)
+        }
+        "DISCARD" => {
+            if parts.next().is_some() {
+                return Err(AppError::InvalidArgs {
+                    command: "DISCARD".to_string(),
+                    expected: "no arguments",
+                });
+            }
+            Ok(Command::Discard)
+        }
         "REPLCONF" => {
             let Some(subcommand) = parts.next() else {
                 return Err(AppError::InvalidArgs {
@@ -734,6 +761,24 @@ mod tests {
     fn parses_info_command() {
         let command = parse_command("INFO").expect("INFO should parse");
         assert_eq!(command, Command::Info);
+    }
+
+    #[test]
+    fn parses_multi_command() {
+        let command = parse_command("MULTI").expect("MULTI should parse");
+        assert_eq!(command, Command::Multi);
+    }
+
+    #[test]
+    fn parses_exec_command() {
+        let command = parse_command("EXEC").expect("EXEC should parse");
+        assert_eq!(command, Command::Exec);
+    }
+
+    #[test]
+    fn parses_discard_command() {
+        let command = parse_command("DISCARD").expect("DISCARD should parse");
+        assert_eq!(command, Command::Discard);
     }
 
     #[test]
