@@ -30,6 +30,7 @@ impl ServerMetrics {
 struct Session {
     username: String,
     authenticated: bool,
+    transaction_queue: Option<Vec<Vec<String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +175,7 @@ async fn handle_client(
     let mut session = Session {
         username: "default".to_string(),
         authenticated: auto_auth,
+        transaction_queue: None,
     };
 
     loop {
@@ -229,28 +231,26 @@ async fn execute_resp(
     }
 
     let verb = command[0].to_ascii_uppercase();
-    let is_acl_mode = !options.acl_store.is_empty();
-    let requires_auth = is_acl_mode || options.requirepass.is_some();
-
-    if requires_auth && !session.authenticated && !is_auth_exempt_command(&verb) {
-        return resp_error("NOAUTH Authentication required");
+    if let Some(error) = session_access_error(options, session, &verb) {
+        return resp_error(&error);
     }
 
-    // ACL permission check — only in ACL mode, for authenticated sessions.
-    if is_acl_mode
-        && session.authenticated
-        && !is_auth_exempt_command(&verb)
-        && !options.acl_store.can_run(&session.username, &verb)
-    {
-        return resp_error(&format!(
-            "NOPERM User {} has no permissions to run the '{}' command",
-            session.username,
-            verb.to_ascii_lowercase()
-        ));
+    if let Some(queued) = &mut session.transaction_queue {
+        if !matches!(verb.as_str(), "MULTI" | "EXEC" | "DISCARD") {
+            if !is_transaction_queueable_command(&verb) {
+                return resp_error(&format!(
+                    "ERR '{}' cannot be queued inside MULTI",
+                    verb.to_ascii_lowercase()
+                ));
+            }
+            queued.push(command.to_vec());
+            return "+QUEUED\r\n".to_string();
+        }
     }
 
     match verb.as_str() {
         "AUTH" => {
+            let is_acl_mode = !options.acl_store.is_empty();
             // Supports both: AUTH <password>  and  AUTH <username> <password>
             if command.len() < 2 || command.len() > 3 {
                 return resp_error("ERR wrong number of arguments for 'AUTH'");
@@ -285,6 +285,40 @@ async fn execute_resp(
                     }
                 }
             }
+        }
+        "MULTI" => {
+            if command.len() != 1 {
+                return resp_error("ERR wrong number of arguments for 'MULTI'");
+            }
+            if session.transaction_queue.is_some() {
+                return resp_error("ERR MULTI calls can not be nested");
+            }
+            session.transaction_queue = Some(Vec::new());
+            "+OK\r\n".to_string()
+        }
+        "EXEC" => {
+            if command.len() != 1 {
+                return resp_error("ERR wrong number of arguments for 'EXEC'");
+            }
+            let Some(queued_commands) = session.transaction_queue.take() else {
+                return resp_error("ERR EXEC without MULTI");
+            };
+
+            let mut response = format!("*{}\r\n", queued_commands.len());
+            for queued_command in queued_commands {
+                let item = Box::pin(execute_resp(state, options, metrics, &queued_command, session)).await;
+                response.push_str(&item);
+            }
+            response
+        }
+        "DISCARD" => {
+            if command.len() != 1 {
+                return resp_error("ERR wrong number of arguments for 'DISCARD'");
+            }
+            if session.transaction_queue.take().is_none() {
+                return resp_error("ERR DISCARD without MULTI");
+            }
+            "+OK\r\n".to_string()
         }
         "PING" => {
             if command.len() > 2 {
@@ -748,8 +782,35 @@ fn now_secs() -> u64 {
     }
 }
 
+fn session_access_error(options: &ServerOptions, session: &Session, verb: &str) -> Option<String> {
+    let is_acl_mode = !options.acl_store.is_empty();
+    let requires_auth = is_acl_mode || options.requirepass.is_some();
+
+    if requires_auth && !session.authenticated && !is_auth_exempt_command(verb) {
+        return Some("NOAUTH Authentication required".to_string());
+    }
+
+    if is_acl_mode
+        && session.authenticated
+        && !is_auth_exempt_command(verb)
+        && !options.acl_store.can_run(&session.username, verb)
+    {
+        return Some(format!(
+            "NOPERM User {} has no permissions to run the '{}' command",
+            session.username,
+            verb.to_ascii_lowercase()
+        ));
+    }
+
+    None
+}
+
 fn is_auth_exempt_command(verb: &str) -> bool {
     matches!(verb, "AUTH" | "PING" | "ECHO" | "QUIT" | "ACLWHOAMI" | "ACLCAT")
+}
+
+fn is_transaction_queueable_command(verb: &str) -> bool {
+    !matches!(verb, "AUTH" | "MULTI" | "EXEC" | "DISCARD" | "QUIT")
 }
 
 async fn read_resp_command<R>(reader: &mut BufReader<R>) -> Result<Option<Vec<String>>, String>
@@ -902,6 +963,7 @@ mod tests {
         let mut session = Session {
             username: "default".to_string(),
             authenticated: false,
+            transaction_queue: None,
         };
         let blocked = execute_resp(
             &state,
@@ -968,6 +1030,7 @@ mod tests {
         let mut session = Session {
             username: "default".to_string(),
             authenticated: false,
+            transaction_queue: None,
         };
 
         // Before AUTH: blocked by NOAUTH.
@@ -1017,5 +1080,106 @@ mod tests {
             set_denied.starts_with("-NOPERM"),
             "SET should be denied for read-only user, got {set_denied}"
         );
+    }
+
+    #[tokio::test]
+    async fn multi_exec_queues_and_runs_commands() {
+        let state = Arc::new(Mutex::new(RedisLite::new()));
+        let metrics = Arc::new(Mutex::new(ServerMetrics::new()));
+        let options = ServerOptions {
+            bind_addr: "127.0.0.1:0".to_string(),
+            data_file: "./tmp.json".to_string(),
+            aof_file: "./tmp.aof".to_string(),
+            autoload: false,
+            autosave: false,
+            appendonly: false,
+            max_keys: None,
+            eviction_policy: EvictionPolicy::NoEviction,
+            requirepass: None,
+            log_level: LogLevel::Error,
+            acl_store: AclStore::default(),
+        };
+        let mut session = Session {
+            username: "default".to_string(),
+            authenticated: true,
+            transaction_queue: None,
+        };
+
+        let multi = execute_resp(&state, &options, &metrics, &["MULTI".to_string()], &mut session).await;
+        assert_eq!(multi, "+OK\r\n");
+
+        let queued_set = execute_resp(
+            &state,
+            &options,
+            &metrics,
+            &["SET".to_string(), "topic".to_string(), "redis".to_string()],
+            &mut session,
+        )
+        .await;
+        assert_eq!(queued_set, "+QUEUED\r\n");
+
+        let queued_get = execute_resp(
+            &state,
+            &options,
+            &metrics,
+            &["GET".to_string(), "topic".to_string()],
+            &mut session,
+        )
+        .await;
+        assert_eq!(queued_get, "+QUEUED\r\n");
+
+        let exec = execute_resp(&state, &options, &metrics, &["EXEC".to_string()], &mut session).await;
+        assert_eq!(exec, "*2\r\n+OK\r\n$5\r\nredis\r\n");
+        assert!(session.transaction_queue.is_none());
+    }
+
+    #[tokio::test]
+    async fn discard_clears_transaction_queue() {
+        let state = Arc::new(Mutex::new(RedisLite::new()));
+        let metrics = Arc::new(Mutex::new(ServerMetrics::new()));
+        let options = ServerOptions {
+            bind_addr: "127.0.0.1:0".to_string(),
+            data_file: "./tmp.json".to_string(),
+            aof_file: "./tmp.aof".to_string(),
+            autoload: false,
+            autosave: false,
+            appendonly: false,
+            max_keys: None,
+            eviction_policy: EvictionPolicy::NoEviction,
+            requirepass: None,
+            log_level: LogLevel::Error,
+            acl_store: AclStore::default(),
+        };
+        let mut session = Session {
+            username: "default".to_string(),
+            authenticated: true,
+            transaction_queue: None,
+        };
+
+        let multi = execute_resp(&state, &options, &metrics, &["MULTI".to_string()], &mut session).await;
+        assert_eq!(multi, "+OK\r\n");
+
+        let queued = execute_resp(
+            &state,
+            &options,
+            &metrics,
+            &["SET".to_string(), "discarded".to_string(), "1".to_string()],
+            &mut session,
+        )
+        .await;
+        assert_eq!(queued, "+QUEUED\r\n");
+
+        let discard = execute_resp(&state, &options, &metrics, &["DISCARD".to_string()], &mut session).await;
+        assert_eq!(discard, "+OK\r\n");
+
+        let get = execute_resp(
+            &state,
+            &options,
+            &metrics,
+            &["GET".to_string(), "discarded".to_string()],
+            &mut session,
+        )
+        .await;
+        assert_eq!(get, "$-1\r\n");
     }
 }
