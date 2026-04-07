@@ -489,23 +489,21 @@ impl RedisLite {
             Command::Multi | Command::Exec | Command::Discard => Err(AppError::Config(
                 "transaction commands require session context".to_string(),
             )),
-            Command::Replconf { subcommand, args } => {
-                match subcommand.to_lowercase().as_str() {
-                    "listening-port" => Ok(RuntimeMessage::Continue("OK".to_string())),
-                    "capa" => Ok(RuntimeMessage::Continue("OK".to_string())),
-                    "ack" => {
-                        if let Some(offset_str) = args.first() {
-                            if let Ok(offset) = offset_str.parse::<i64>() {
-                                self.replication.replication_offset = offset;
-                            }
+            Command::Replconf { subcommand, args } => match subcommand.to_lowercase().as_str() {
+                "listening-port" => Ok(RuntimeMessage::Continue("OK".to_string())),
+                "capa" => Ok(RuntimeMessage::Continue("OK".to_string())),
+                "ack" => {
+                    if let Some(offset_str) = args.first() {
+                        if let Ok(offset) = offset_str.parse::<i64>() {
+                            self.replication.replication_offset = offset;
                         }
-                        Ok(RuntimeMessage::Continue("OK".to_string()))
                     }
-                    _ => Err(AppError::Config(format!(
-                        "unknown REPLCONF subcommand: {subcommand}"
-                    ))),
+                    Ok(RuntimeMessage::Continue("OK".to_string()))
                 }
-            }
+                _ => Err(AppError::Config(format!(
+                    "unknown REPLCONF subcommand: {subcommand}"
+                ))),
+            },
             Command::Psync {
                 replication_id,
                 offset: _,
@@ -517,10 +515,7 @@ impl RedisLite {
                     );
                     Ok(RuntimeMessage::Continue(sync_response))
                 } else {
-                    let sync_response = format!(
-                        "CONTINUE {}",
-                        self.replication.replication_offset
-                    );
+                    let sync_response = format!("CONTINUE {}", self.replication.replication_offset);
                     Ok(RuntimeMessage::Continue(sync_response))
                 }
             }

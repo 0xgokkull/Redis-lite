@@ -31,8 +31,7 @@ impl CommandCategory {
                 "GET", "HGET", "SMEMBERS", "ZRANGE", "TTL", "INFO", "ROLE", "PING", "ECHO",
             ]),
             "write" => Some(vec![
-                "SET", "DEL", "HSET", "SADD", "LPUSH", "RPOP", "ZADD", "EXPIRE", "PERSIST",
-                "SAVE",
+                "SET", "DEL", "HSET", "SADD", "LPUSH", "RPOP", "ZADD", "EXPIRE", "PERSIST", "SAVE",
             ]),
             "admin" => Some(vec![
                 "AUTH", "ACLLIST", "SLAVEOF", "REPLCONF", "PSYNC", "QUIT",
@@ -321,7 +320,10 @@ mod tests {
     fn to_rule_string_masks_password() {
         let user = parse_acl_rule("alice secret +@read +@write").unwrap();
         let rule = user.to_rule_string();
-        assert!(!rule.contains("secret"), "password must be masked in rule output");
+        assert!(
+            !rule.contains("secret"),
+            "password must be masked in rule output"
+        );
         assert!(rule.contains("alice"));
         assert!(rule.contains("+@read"));
         assert!(rule.contains("+@write"));

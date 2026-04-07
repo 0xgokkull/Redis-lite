@@ -96,8 +96,7 @@ impl ReplicaConnections {
     }
 
     pub async fn add_replica(&mut self, id: String, stream: TcpStream) {
-        self.connections
-            .insert(id, Arc::new(Mutex::new(stream)));
+        self.connections.insert(id, Arc::new(Mutex::new(stream)));
     }
 
     pub async fn broadcast_command(&self, command_line: &str) -> Result<(), AppError> {

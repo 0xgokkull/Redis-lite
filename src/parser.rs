@@ -522,10 +522,12 @@ pub fn parse_command(input: &str) -> Result<Command, AppError> {
                     expected: "<replication_id> <offset>",
                 });
             }
-            let offset = raw_offset.parse::<i64>().map_err(|_| AppError::InvalidArgs {
-                command: "PSYNC".to_string(),
-                expected: "<replication_id> <offset>",
-            })?;
+            let offset = raw_offset
+                .parse::<i64>()
+                .map_err(|_| AppError::InvalidArgs {
+                    command: "PSYNC".to_string(),
+                    expected: "<replication_id> <offset>",
+                })?;
             Ok(Command::Psync {
                 replication_id: replication_id.to_string(),
                 offset,

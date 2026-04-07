@@ -49,9 +49,10 @@ pub struct ServerOptions {
 }
 
 pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
-    options
-        .log_level
-        .log(LogLevel::Info, &format!("starting RESP server on {}", options.bind_addr));
+    options.log_level.log(
+        LogLevel::Info,
+        &format!("starting RESP server on {}", options.bind_addr),
+    );
 
     let listener = TcpListener::bind(&options.bind_addr)
         .await
@@ -86,9 +87,10 @@ pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
     let shared = Arc::new(Mutex::new(app));
     let metrics = Arc::new(Mutex::new(ServerMetrics::new()));
 
-    options
-        .log_level
-        .log(LogLevel::Info, &format!("RESP server listening on {}", options.bind_addr));
+    options.log_level.log(
+        LogLevel::Info,
+        &format!("RESP server listening on {}", options.bind_addr),
+    );
 
     loop {
         let accepted = tokio::select! {
@@ -126,8 +128,13 @@ pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
         }
 
         tokio::spawn(async move {
-            if let Err(error) =
-                handle_client(stream, state, options_clone.clone(), Arc::clone(&metrics_clone)).await
+            if let Err(error) = handle_client(
+                stream,
+                state,
+                options_clone.clone(),
+                Arc::clone(&metrics_clone),
+            )
+            .await
             {
                 options_clone
                     .log_level
@@ -146,9 +153,10 @@ pub async fn run_server(options: ServerOptions) -> Result<(), AppError> {
     let app = shared.lock().await;
     if options.autosave {
         app.save_to_path(&options.data_file)?;
-        options
-            .log_level
-            .log(LogLevel::Info, &format!("final snapshot saved to {}", options.data_file));
+        options.log_level.log(
+            LogLevel::Info,
+            &format!("final snapshot saved to {}", options.data_file),
+        );
     }
 
     Ok(())
@@ -306,7 +314,14 @@ async fn execute_resp(
 
             let mut response = format!("*{}\r\n", queued_commands.len());
             for queued_command in queued_commands {
-                let item = Box::pin(execute_resp(state, options, metrics, &queued_command, session)).await;
+                let item = Box::pin(execute_resp(
+                    state,
+                    options,
+                    metrics,
+                    &queued_command,
+                    session,
+                ))
+                .await;
                 response.push_str(&item);
             }
             response
@@ -806,7 +821,10 @@ fn session_access_error(options: &ServerOptions, session: &Session, verb: &str) 
 }
 
 fn is_auth_exempt_command(verb: &str) -> bool {
-    matches!(verb, "AUTH" | "PING" | "ECHO" | "QUIT" | "ACLWHOAMI" | "ACLCAT")
+    matches!(
+        verb,
+        "AUTH" | "PING" | "ECHO" | "QUIT" | "ACLWHOAMI" | "ACLCAT"
+    )
 }
 
 fn is_transaction_queueable_command(verb: &str) -> bool {
@@ -913,8 +931,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        execute_resp, read_resp_command, resp_bulk, resp_integer, Session, ServerMetrics,
-        ServerOptions,
+        execute_resp, read_resp_command, resp_bulk, resp_integer, ServerMetrics, ServerOptions,
+        Session,
     };
     use crate::acl::AclStore;
     use crate::config::EvictionPolicy;
@@ -1011,8 +1029,7 @@ mod tests {
     async fn acl_restricts_write_for_read_only_user() {
         let state = Arc::new(Mutex::new(RedisLite::new()));
         let metrics = Arc::new(Mutex::new(ServerMetrics::new()));
-        let acl_store =
-            AclStore::from_rules(&["reader readpass +@read".to_string()]).unwrap();
+        let acl_store = AclStore::from_rules(&["reader readpass +@read".to_string()]).unwrap();
         let options = ServerOptions {
             bind_addr: "127.0.0.1:0".to_string(),
             data_file: "./tmp.json".to_string(),
@@ -1042,14 +1059,21 @@ mod tests {
             &mut session,
         )
         .await;
-        assert!(blocked.starts_with("-NOAUTH"), "expected NOAUTH, got {blocked}");
+        assert!(
+            blocked.starts_with("-NOAUTH"),
+            "expected NOAUTH, got {blocked}"
+        );
 
         // Auth as the read-only user.
         let auth_ok = execute_resp(
             &state,
             &options,
             &metrics,
-            &["AUTH".to_string(), "reader".to_string(), "readpass".to_string()],
+            &[
+                "AUTH".to_string(),
+                "reader".to_string(),
+                "readpass".to_string(),
+            ],
             &mut session,
         )
         .await;
@@ -1065,7 +1089,10 @@ mod tests {
             &mut session,
         )
         .await;
-        assert!(!get_ok.starts_with("-NOPERM"), "GET should be allowed, got {get_ok}");
+        assert!(
+            !get_ok.starts_with("-NOPERM"),
+            "GET should be allowed, got {get_ok}"
+        );
 
         // Write denied by ACL.
         let set_denied = execute_resp(
@@ -1105,7 +1132,14 @@ mod tests {
             transaction_queue: None,
         };
 
-        let multi = execute_resp(&state, &options, &metrics, &["MULTI".to_string()], &mut session).await;
+        let multi = execute_resp(
+            &state,
+            &options,
+            &metrics,
+            &["MULTI".to_string()],
+            &mut session,
+        )
+        .await;
         assert_eq!(multi, "+OK\r\n");
 
         let queued_set = execute_resp(
@@ -1128,7 +1162,14 @@ mod tests {
         .await;
         assert_eq!(queued_get, "+QUEUED\r\n");
 
-        let exec = execute_resp(&state, &options, &metrics, &["EXEC".to_string()], &mut session).await;
+        let exec = execute_resp(
+            &state,
+            &options,
+            &metrics,
+            &["EXEC".to_string()],
+            &mut session,
+        )
+        .await;
         assert_eq!(exec, "*2\r\n+OK\r\n$5\r\nredis\r\n");
         assert!(session.transaction_queue.is_none());
     }
@@ -1156,7 +1197,14 @@ mod tests {
             transaction_queue: None,
         };
 
-        let multi = execute_resp(&state, &options, &metrics, &["MULTI".to_string()], &mut session).await;
+        let multi = execute_resp(
+            &state,
+            &options,
+            &metrics,
+            &["MULTI".to_string()],
+            &mut session,
+        )
+        .await;
         assert_eq!(multi, "+OK\r\n");
 
         let queued = execute_resp(
@@ -1169,7 +1217,14 @@ mod tests {
         .await;
         assert_eq!(queued, "+QUEUED\r\n");
 
-        let discard = execute_resp(&state, &options, &metrics, &["DISCARD".to_string()], &mut session).await;
+        let discard = execute_resp(
+            &state,
+            &options,
+            &metrics,
+            &["DISCARD".to_string()],
+            &mut session,
+        )
+        .await;
         assert_eq!(discard, "+OK\r\n");
 
         let get = execute_resp(

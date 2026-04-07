@@ -119,16 +119,22 @@ Environment variables:\n\
 
 fn validate_config(config: &AppConfig) -> Result<(), AppError> {
     if config.data_file.trim().is_empty() {
-        return Err(AppError::Config("data file path cannot be empty".to_string()));
+        return Err(AppError::Config(
+            "data file path cannot be empty".to_string(),
+        ));
     }
 
     if config.aof_file.trim().is_empty() {
-        return Err(AppError::Config("AOF file path cannot be empty".to_string()));
+        return Err(AppError::Config(
+            "AOF file path cannot be empty".to_string(),
+        ));
     }
 
     if let Some(max_keys) = config.max_keys {
         if max_keys == 0 {
-            return Err(AppError::Config("max-keys must be greater than 0".to_string()));
+            return Err(AppError::Config(
+                "max-keys must be greater than 0".to_string(),
+            ));
         }
     }
 
